@@ -7,7 +7,9 @@
 .nv/
 .dotnet/
 .claude/
-.copilot
+.copilot/
+.ssh/
+.gitconfig
 
 #training 
 runs/

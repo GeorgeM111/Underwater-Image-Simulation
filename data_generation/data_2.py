@@ -1,4 +1,9 @@
-import pandas as pd
+# --- repo-root path bootstrap (auto-added) ---
+import os as _os, sys as _sys
+_REPO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _REPO_ROOT not in _sys.path:
+    _sys.path.insert(0, _REPO_ROOT)
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -23,12 +28,18 @@ from numpy import savez_compressed
 import cv2
 import glob
 
-from ricardo_underwater_image import compute_complex_noise
+from config import CONFIG
+from utils.physics import compute_complex_noise
 #GM - define a menu of physically plausible water types that will be used to draw a value at random per image.
 #GM - This accounts for the fact that water might appear different based on geography, seasons, depth, weather, etc..
-beta_val_r = [0.0192, 0.0182, 0.0263, 0.0253]
-beta_val_g = [0.0398, 0.0598, 0.0460, 0.0661]
-beta_val_b = [0.357, 0.416, 0.528, 0.364, 0.423, 0.523]
+beta_val_r = CONFIG.beta_val_r
+beta_val_g = CONFIG.beta_val_g
+beta_val_b = CONFIG.beta_val_b
+
+# Directory holding the pre-computed A / Beta parameter matrices. Derived from
+# the configured NYU train parameter-matrix path so all parameter .npy files
+# live alongside it (replaces the old hard-coded /datas/.../parameters dir).
+_PARAMS_DIR = _os.path.dirname(CONFIG.beta_mat_nyu_train)
 
 # loader uses the transforms function that comes with torchvision
 # here we will pre-compute the images and will save them from before. Later, we will just load the images inside the get_item() function
@@ -128,7 +139,7 @@ def loadZipToMemTest(zip_file):
 #GM - NYU TRAIN
 def generate_and_save_atmosphere_light_beta():
     print
-    data, nyu2_train = loadZipToMem('/datas/sandbox/gmoussa/nyu_data.zip')
+    data, nyu2_train = loadZipToMem(CONFIG.nyu_zip_path)
     data_len = len(nyu2_train)
     #GM
     print(f"Loaded {data_len} items")
@@ -157,14 +168,14 @@ def generate_and_save_atmosphere_light_beta():
 
         a_mat_arr.append(a_mat)
         idx = idx+ 1
-    save('/datas/sandbox/gmoussa/parameters/A_Mat_NYU_train.npy', a_mat_arr)
-    save('/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_train.npy', beta_arr)
+    save(_os.path.join(_PARAMS_DIR, 'A_Mat_NYU_train.npy'), a_mat_arr)
+    save(_os.path.join(_PARAMS_DIR, 'Beta_Mat_NYU_train.npy'), beta_arr)
     #GM - added the next line
     print("Sucessfully generated Beta and Atmospheric Light matrices for NYU - Train.")
 
 #GM - NYU TEST
 def generate_and_save_atmosphere_light_beta_test():
-    data, nyu2_test = loadZipToMemTest('/datas/sandbox/gmoussa/nyu_data.zip')
+    data, nyu2_test = loadZipToMemTest(CONFIG.nyu_zip_path)
     data_len = len(nyu2_test)
     #GM
     print(f"Loaded {data_len} items")
@@ -188,15 +199,15 @@ def generate_and_save_atmosphere_light_beta_test():
 
         a_mat_arr.append(a_mat)
 
-    save('/datas/sandbox/gmoussa/parameters/A_Mat_NYU_test.npy', a_mat_arr)
-    save('/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_test.npy', beta_arr)
+    save(_os.path.join(_PARAMS_DIR, 'A_Mat_NYU_test.npy'), a_mat_arr)
+    save(_os.path.join(_PARAMS_DIR, 'Beta_Mat_NYU_test.npy'), beta_arr)
     #GM - 1 line
     print("Sucessfully generated Beta and Atmospheric Light matrices for NYU - Test.")
 
 #GM - Make3D Train
 def generate_and_save_atmosphere_light_beta_make_3D():
 
-    train_images = glob.glob('/datas/sandbox/gmoussa/Make3D/Train400Img/*.jpg')
+    train_images = glob.glob(_os.path.join(CONFIG.make3d_train_img_dir, '*.jpg'))
     data_len = len(train_images)
     del train_images
 
@@ -218,14 +229,14 @@ def generate_and_save_atmosphere_light_beta_make_3D():
 
         a_mat_arr.append(a_mat)
 
-    save('/datas/sandbox/gmoussa/parameters/A_Mat_Make_3D_Train.npy', a_mat_arr)
-    save('/datas/sandbox/gmoussa/parameters/Beta_Mat_Make_3D_Train.npy', beta_arr)
+    save(_os.path.join(_PARAMS_DIR, 'A_Mat_Make_3D_Train.npy'), a_mat_arr)
+    save(_os.path.join(_PARAMS_DIR, 'Beta_Mat_Make_3D_Train.npy'), beta_arr)
     #GM - 1 line
     print("Sucessfully generated Beta and Atmospheric Light matrices for NYU - Train.")
 
 #GM - Make3D Test
 def generate_and_save_atmosphere_light_beta_make_3D_Test():
-    train_images = glob.glob('/datas/sandbox/gmoussa/Make3D/Test134/*.jpg')
+    train_images = glob.glob(_os.path.join(CONFIG.make3d_test_img_dir, '*.jpg'))
     data_len = len(train_images)
     del train_images
 
@@ -247,8 +258,8 @@ def generate_and_save_atmosphere_light_beta_make_3D_Test():
 
         a_mat_arr.append(a_mat)
 
-    save('/datas/sandbox/gmoussa/parameters/A_Mat_Make_3D_Test.npy', a_mat_arr)
-    save('/datas/sandbox/gmoussa/parameters/Beta_Mat_Make_3D_Test.npy', beta_arr)
+    save(_os.path.join(_PARAMS_DIR, 'A_Mat_Make_3D_Test.npy'), a_mat_arr)
+    save(_os.path.join(_PARAMS_DIR, 'Beta_Mat_Make_3D_Test.npy'), beta_arr)
     #GM - 1 line
     print("Sucessfully generated Beta and Atmospheric Light matrices for Make3D - Test.")
 
@@ -258,9 +269,9 @@ def generate_and_save_atmosphere_light_beta_make_3D_Test():
 
 #GM- NYU TRAIN
 def generate_and_save_haze_image(stIndex, endIndex):
-    data, nyu_dataset = loadZipToMem('/datas/sandbox/gmoussa/nyu_data.zip')
-    a_mat_arr = load('/datas/sandbox/gmoussa/parameters/A_Mat_NYU_train.npy')
-    beta_mat_arr = load('/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_train.npy')
+    data, nyu_dataset = loadZipToMem(CONFIG.nyu_zip_path)
+    a_mat_arr = load(_os.path.join(_PARAMS_DIR, 'A_Mat_NYU_train.npy'))
+    beta_mat_arr = load(_os.path.join(_PARAMS_DIR, 'Beta_Mat_NYU_train.npy'))
     # keep_all_haze_image = []
     # keep_all_complex_haze_image = []
     # keep_all_depth_half_3d = []
@@ -327,8 +338,8 @@ def generate_and_save_haze_image(stIndex, endIndex):
         asarray(depth)
         asarray(image)
 
-        haze_image_name = "/datas/sandbox/gmoussa/ground_truth/nyu/train/" + str(idx) + "haze_image" + ".npy"
-        complex_haze_image_name =  "/datas/sandbox/gmoussa/ground_truth/nyu/train/" + str(idx) + "complex_haze_image" + ".npy"
+        haze_image_name = _os.path.join(CONFIG.nyu_gt_train_dir, str(idx) + "haze_image" + ".npy")
+        complex_haze_image_name = _os.path.join(CONFIG.nyu_gt_train_dir, str(idx) + "complex_haze_image" + ".npy")
         #orig_depth_image_name =  "/sandbox1/gmoussa/ground_truth/nyu/train/" +  str(idx) + "orig_depth_image" + ".npy"
         #orig_image_name =  "/sandbox1/gmoussa/ground_truth/nyu/train/" +  str(idx) + "orig_image" + ".npy"
 
@@ -347,9 +358,9 @@ def generate_and_save_haze_image(stIndex, endIndex):
 
 #GM - NYU Test
 def generate_and_save_haze_image_test(stIndex, endIndex):
-    data, nyu_dataset = loadZipToMemTest('/datas/sandbox/gmoussa/nyu_data.zip')
-    a_mat_arr = load('/datas/sandbox/gmoussa/parameters/A_Mat_NYU_test.npy')
-    beta_mat_arr = load('/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_test.npy')
+    data, nyu_dataset = loadZipToMemTest(CONFIG.nyu_zip_path)
+    a_mat_arr = load(_os.path.join(_PARAMS_DIR, 'A_Mat_NYU_test.npy'))
+    beta_mat_arr = load(_os.path.join(_PARAMS_DIR, 'Beta_Mat_NYU_test.npy'))
 
     # keep_all_haze_image = []
     # keep_all_complex_haze_image = []
@@ -417,8 +428,8 @@ def generate_and_save_haze_image_test(stIndex, endIndex):
         asarray(depth)
         asarray(image)
         
-        haze_image_name = "/datas/sandbox/gmoussa/ground_truth/nyu/test/" + str(idx) + "haze_image" + ".npy"
-        complex_haze_image_name =  "/datas/sandbox/gmoussa/ground_truth/nyu/test/" + str(idx) + "complex_haze_image" + ".npy"
+        haze_image_name = _os.path.join(CONFIG.nyu_gt_test_dir, str(idx) + "haze_image" + ".npy")
+        complex_haze_image_name = _os.path.join(CONFIG.nyu_gt_test_dir, str(idx) + "complex_haze_image" + ".npy")
         # orig_depth_image_name =  "/sandbox1/gmoussa/ground_truth/nyu/test/" +  str(idx) + "orig_depth_image" + ".npy"
         # orig_image_name =  "/sandbox1/gmoussa/ground_truth/nyu/test/" +  str(idx) + "orig_image" + ".npy"
 
@@ -428,54 +439,57 @@ def generate_and_save_haze_image_test(stIndex, endIndex):
 #GM - Make3D Train
 def generate_and_save_ricardo_image_make_3D(stIndex, endIndex):
     
-    train_images = glob.glob('/datas/sandbox/gmoussa/Make3D/Train400Img/*.jpg')
-    train_depth = glob.glob('/datas/sandbox/gmoussa/Make3D/Train400Depth/*.mat')
+    train_images = glob.glob(_os.path.join(CONFIG.make3d_train_img_dir, '*.jpg'))
+    train_depth = glob.glob(_os.path.join(CONFIG.make3d_train_depth_dir, '*.mat'))
 
     train_images = sorted(train_images, key=lambda p: p.split('/')[-1].split('img-')[-1])
     train_depth = sorted(train_depth, key=lambda p: p.split('/')[-1].split('depth_sph_corr-')[-1])
 
-    a_mat_arr = load('/datas/sandbox/gmoussa/parameters/A_Mat_Make_3D_Train.npy')
-    beta_mat_arr = load('/datas/sandbox/gmoussa/parameters/Beta_Mat_Make_3D_Train.npy')
+    a_mat_arr = load(_os.path.join(_PARAMS_DIR, 'A_Mat_Make_3D_Train.npy'))
+    beta_mat_arr = load(_os.path.join(_PARAMS_DIR, 'Beta_Mat_Make_3D_Train.npy'))
 
     for idx in range(stIndex, endIndex):
 
         image = cv2.imread(train_images[idx])
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # cv2 loads BGR; keep the whole pipeline RGB
         depth = io.loadmat(train_depth[idx])['Position3DGrid'][:, :, 3]
 
         image = cv2.resize(image, (460, 345), interpolation=cv2.INTER_LINEAR)
         depth = cv2.resize(depth, (460, 345), interpolation=cv2.INTER_LINEAR)
 
         image_half = cv2.resize(image, (230, 173), interpolation=cv2.INTER_LINEAR)
-        depth_half = cv2.resize(depth, (230, 173), interpolation=cv2.INTER_LINEAR)
+        depth_half_m = cv2.resize(depth, (230, 173), interpolation=cv2.INTER_LINEAR)  # metres
 
         del image, depth
 
         image_half = torch.from_numpy(image_half).permute(2, 0, 1).float() / 255
-        depth_half = torch.from_numpy(depth_half).float() / 80
+        # Keep depth in METRES for the classical (per-metre Jerlov) haze model so
+        # the attenuation matches NYU. The complex model self-normalises depth to
+        # 0-255 internally, so it gets the [0,1]-scaled version.
+        depth_half_m = torch.from_numpy(depth_half_m).float()
+        depth_norm01 = depth_half_m / CONFIG.make3d_max_depth_m
 
-        depth_half = torch.unsqueeze(depth_half, 0)
-        depth_half = torch.tile(depth_half, [3, 1, 1])
+        depth_half_m = torch.unsqueeze(depth_half_m, 0).repeat(3, 1, 1)
+        depth_norm01 = torch.unsqueeze(depth_norm01, 0).repeat(3, 1, 1)
 
-        depth_half.requires_grad = False
+        depth_half_m.requires_grad = False
+        depth_norm01.requires_grad = False
         image_half.requires_grad = False
 
-        depth_half_0_1 = depth_half
-        m = depth_half_0_1.shape[1]
-        n = depth_half_0_1.shape[2]
+        m = depth_half_m.shape[1]
+        n = depth_half_m.shape[2]
 
-        # save_image(image_half, 'img_half.png')
-        # save_image(depth_half, 'depth_half.png')
-
-        image_half = image_half.numpy() # converting into numpy array
+        image_half = image_half.numpy()  # converting into numpy array
         image_half = np.swapaxes(image_half, 0, 2)  # making m * n *3
         image_half = np.swapaxes(image_half, 0, 1)  # making m * n *3
 
-        depth_half = depth_half.numpy() # converting into numpy array
-        depth_half = np.swapaxes(depth_half, 0, 2)  # making m * n *3
-        depth_half = np.swapaxes(depth_half, 0, 1)  # making m * n *3
+        depth_half_m = depth_half_m.numpy()
+        depth_half_m = np.swapaxes(depth_half_m, 0, 2)
+        depth_half_m = np.swapaxes(depth_half_m, 0, 1)
 
-        # another_simple_image_save(image_half, "image_numpy.png")
-        # another_simple_image_save(depth_half, "depth_numpy.png")
+        depth_norm01 = depth_norm01.numpy()
+        depth_norm01 = np.swapaxes(depth_norm01, 0, 2)
+        depth_norm01 = np.swapaxes(depth_norm01, 0, 1)
 
         beta_mat = beta_mat_arr[idx]
         beta_mat_mod = create_reorganize_dimension_custom(beta_mat, m, n)
@@ -483,7 +497,7 @@ def generate_and_save_ricardo_image_make_3D(stIndex, endIndex):
         a_mat = a_mat_arr[idx]
         a_mat_mod = create_reorganize_dimension_custom(a_mat, m, n)
 
-        tx1 = np.exp(-np.multiply(beta_mat_mod, depth_half))
+        tx1 = np.exp(-np.multiply(beta_mat_mod, depth_half_m))  # metres * per-metre beta
 
         # generate 3D unit matrix
         unit_mat = [1.0, 1.0, 1.0]
@@ -492,11 +506,8 @@ def generate_and_save_ricardo_image_make_3D(stIndex, endIndex):
         second_term = np.multiply(a_mat_mod, (np.subtract(unit_mat, tx1)))
         haze_image = np.add((np.multiply(image_half, tx1)), second_term)
 
-        complex_noisy_img = compute_complex_noise(image_half, depth_half[:, :, 0], beta_mat,
+        complex_noisy_img = compute_complex_noise(image_half, depth_norm01[:, :, 0], beta_mat,
                                                   a_mat)
-
-        # another_simple_image_save(haze_image, "formed_haze_numpy.png")
-        # another_simple_image_save(complex_noisy_img, "formed_complex_numpy.png")
 
         complex_noisy_img = complex_noisy_img/255
 
@@ -506,62 +517,66 @@ def generate_and_save_ricardo_image_make_3D(stIndex, endIndex):
         asarray(haze_image)  # values are between 0-1
         asarray(complex_noisy_img)  # values are between 0-1
 
-        haze_image_name = "/datas/sandbox/gmoussa/ground_truth/make3d/train/" + str(idx) + "haze_image" + ".npy"
-        complex_haze_image_name =  "/datas/sandbox/gmoussa/ground_truth/make3d/train/" + str(idx) + "complex_haze_image_name" + ".npy"
-        
+        haze_image_name = _os.path.join(CONFIG.make3d_save_dir, str(idx) + "haze_image" + ".npy")
+        # Filename matches the Make3D loader (data/make3d.py) and the NYU convention.
+        complex_haze_image_name = _os.path.join(CONFIG.make3d_save_dir, str(idx) + "complex_haze_image" + ".npy")
+
         save(haze_image_name, haze_image)
         save(complex_haze_image_name, complex_noisy_img)
 
 #GM - Make3DTest
 def generate_and_save_ricardo_image_make_3D_Test(stIndex, endIndex):
-    train_images = glob.glob('/datas/sandbox/gmoussa/Make3D/Test134/*.jpg')
-    train_depth = glob.glob('/datas/sandbox/gmoussa/Make3D/Test134Depth/Gridlaserdata/*.mat')
+    train_images = glob.glob(_os.path.join(CONFIG.make3d_test_img_dir, '*.jpg'))
+    train_depth = glob.glob(_os.path.join(CONFIG.make3d_test_depth_dir, '*.mat'))
 
     train_images = sorted(train_images, key=lambda p: p.split('/')[-1].split('img-')[-1])
     train_depth = sorted(train_depth, key=lambda p: p.split('/')[-1].split('depth_sph_corr-')[-1])
 
-    a_mat_arr = load('/datas/sandbox/gmoussa/parameters/A_Mat_Make_3D_Test.npy')
-    beta_mat_arr = load('/datas/sandbox/gmoussa/parameters/Beta_Mat_Make_3D_Test.npy')
+    a_mat_arr = load(_os.path.join(_PARAMS_DIR, 'A_Mat_Make_3D_Test.npy'))
+    beta_mat_arr = load(_os.path.join(_PARAMS_DIR, 'Beta_Mat_Make_3D_Test.npy'))
 
     for idx in range(stIndex, endIndex):
 
         image = cv2.imread(train_images[idx])
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # cv2 loads BGR; keep the whole pipeline RGB
         depth = io.loadmat(train_depth[idx])['Position3DGrid'][:, :, 3]
 
         image = cv2.resize(image, (460, 345), interpolation=cv2.INTER_LINEAR)
         depth = cv2.resize(depth, (460, 345), interpolation=cv2.INTER_LINEAR)
 
         image_half = cv2.resize(image, (230, 173), interpolation=cv2.INTER_LINEAR)
-        depth_half = cv2.resize(depth, (230, 173), interpolation=cv2.INTER_LINEAR)
+        depth_half_m = cv2.resize(depth, (230, 173), interpolation=cv2.INTER_LINEAR)  # metres
 
         del image, depth
 
         image_half = torch.from_numpy(image_half).permute(2, 0, 1).float() / 255
-        depth_half = torch.from_numpy(depth_half).float() / 80
+        # Keep depth in METRES for the classical (per-metre Jerlov) haze model so
+        # the attenuation matches NYU. The complex model self-normalises depth to
+        # 0-255 internally, so it gets the [0,1]-scaled version.
+        depth_half_m = torch.from_numpy(depth_half_m).float()
+        depth_norm01 = depth_half_m / CONFIG.make3d_max_depth_m
 
-        depth_half = torch.unsqueeze(depth_half, 0)
-        depth_half = torch.tile(depth_half, [3, 1, 1])
+        depth_half_m = torch.unsqueeze(depth_half_m, 0).repeat(3, 1, 1)
+        depth_norm01 = torch.unsqueeze(depth_norm01, 0).repeat(3, 1, 1)
 
-        depth_half.requires_grad = False
+        depth_half_m.requires_grad = False
+        depth_norm01.requires_grad = False
         image_half.requires_grad = False
 
-        depth_half_0_1 = depth_half
-        m = depth_half_0_1.shape[1]
-        n = depth_half_0_1.shape[2]
+        m = depth_half_m.shape[1]
+        n = depth_half_m.shape[2]
 
-        # save_image(image_half, 'img_half.png')
-        # save_image(depth_half, 'depth_half.png')
-
-        image_half = image_half.numpy() # converting into numpy array
+        image_half = image_half.numpy()  # converting into numpy array
         image_half = np.swapaxes(image_half, 0, 2)  # making m * n *3
         image_half = np.swapaxes(image_half, 0, 1)  # making m * n *3
 
-        depth_half = depth_half.numpy() # converting into numpy array
-        depth_half = np.swapaxes(depth_half, 0, 2)  # making m * n *3
-        depth_half = np.swapaxes(depth_half, 0, 1)  # making m * n *3
+        depth_half_m = depth_half_m.numpy()
+        depth_half_m = np.swapaxes(depth_half_m, 0, 2)
+        depth_half_m = np.swapaxes(depth_half_m, 0, 1)
 
-        # another_simple_image_save(image_half, "image_numpy.png")
-        # another_simple_image_save(depth_half, "depth_numpy.png")
+        depth_norm01 = depth_norm01.numpy()
+        depth_norm01 = np.swapaxes(depth_norm01, 0, 2)
+        depth_norm01 = np.swapaxes(depth_norm01, 0, 1)
 
         beta_mat = beta_mat_arr[idx]
         beta_mat_mod = create_reorganize_dimension_custom(beta_mat, m, n)
@@ -569,7 +584,7 @@ def generate_and_save_ricardo_image_make_3D_Test(stIndex, endIndex):
         a_mat = a_mat_arr[idx]
         a_mat_mod = create_reorganize_dimension_custom(a_mat, m, n)
 
-        tx1 = np.exp(-np.multiply(beta_mat_mod, depth_half))
+        tx1 = np.exp(-np.multiply(beta_mat_mod, depth_half_m))  # metres * per-metre beta
 
         # generate 3D unit matrix
         unit_mat = [1.0, 1.0, 1.0]
@@ -578,11 +593,8 @@ def generate_and_save_ricardo_image_make_3D_Test(stIndex, endIndex):
         second_term = np.multiply(a_mat_mod, (np.subtract(unit_mat, tx1)))
         haze_image = np.add((np.multiply(image_half, tx1)), second_term)
 
-        complex_noisy_img = compute_complex_noise(image_half, depth_half[:, :, 0], beta_mat,
+        complex_noisy_img = compute_complex_noise(image_half, depth_norm01[:, :, 0], beta_mat,
                                                   a_mat)
-
-        # another_simple_image_save(haze_image, "formed_haze_numpy.png")
-        # another_simple_image_save(complex_noisy_img, "formed_complex_numpy.png")
 
         complex_noisy_img = complex_noisy_img/255
 
@@ -592,8 +604,9 @@ def generate_and_save_ricardo_image_make_3D_Test(stIndex, endIndex):
         asarray(haze_image)  # values are between 0-1
         asarray(complex_noisy_img)  # values are between 0-1
 
-        haze_image_name = "/datas/sandbox/gmoussa/ground_truth/make3d/test/" + str(idx) + "haze_image" + ".npy"
-        complex_haze_image_name =  "/datas/sandbox/gmoussa/ground_truth/make3d/test/" + str(idx) + "complex_haze_image" + ".npy"
+        haze_image_name = _os.path.join(CONFIG.make3d_test_save_dir, str(idx) + "haze_image" + ".npy")
+        # Filename matches the Make3D loader (data/make3d.py) and the NYU convention.
+        complex_haze_image_name = _os.path.join(CONFIG.make3d_test_save_dir, str(idx) + "complex_haze_image" + ".npy")
         
         save(haze_image_name, haze_image)
         save(complex_haze_image_name, complex_noisy_img)
@@ -611,10 +624,10 @@ def another_simple_image_save(image, path):
 def testing_image_saving_code(self, idx):
     # idx = 49652  # **************************************
 
-    haze_image_name = "/data/zenith/user/tmondal/save_data_water/all_data/" + str(idx) + "haze_image" + ".npy"
-    complex_haze_image_name =  "/data/zenith/user/tmondal/save_data_water/all_data/" + str(idx) + "complex_haze_image_name" + ".npy"
-    orig_depth_image_name =  "/data/zenith/user/tmondal/save_data_water/all_data/" +  str(idx) + "orig_depth_image" + ".npy"
-    orig_image_name =  "/data/zenith/user/tmondal/save_data_water/all_data/" +  str(idx) + "orig_image" + ".npy"
+    haze_image_name = _os.path.join(CONFIG.nyu_save_dir, str(idx) + "haze_image" + ".npy")
+    complex_haze_image_name = _os.path.join(CONFIG.nyu_save_dir, str(idx) + "complex_haze_image_name" + ".npy")
+    orig_depth_image_name = _os.path.join(CONFIG.nyu_save_dir, str(idx) + "orig_depth_image" + ".npy")
+    orig_image_name = _os.path.join(CONFIG.nyu_save_dir, str(idx) + "orig_image" + ".npy")
 
     haze_image = load(haze_image_name)
     complex_noisy_img = load(complex_haze_image_name)
@@ -998,7 +1011,7 @@ def getDefaultTrainTransform():
 
 
 def getTrainingTestingData(batch_size):
-    data, nyu2_train = loadZipToMem('/users/local/t20monda/nyu_data.zip')
+    data, nyu2_train = loadZipToMem(CONFIG.nyu_zip_path)
 
     transformed_training = depthDatasetMemory(data, nyu2_train, transform=getDefaultTrainTransform())
     transformed_testing = depthDatasetMemory(data, nyu2_train, transform=getNoTransform())
@@ -1007,7 +1020,7 @@ def getTrainingTestingData(batch_size):
                                                                                   shuffle=False)
 
 def getTestingDataOnly(batch_size):
-    data, nyu2_test = loadZipToMemTest('/users/local/t20monda/nyu_data.zip')
-    
+    data, nyu2_test = loadZipToMemTest(CONFIG.nyu_zip_path)
+
     transformed_testing = depthDatasetMemory(data, nyu2_test, transform=getNoTransform(True))
     return DataLoader(transformed_testing, batch_size, shuffle=True, drop_last=True)

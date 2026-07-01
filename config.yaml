@@ -1,0 +1,93 @@
+# =============================================================================
+# Centralised configuration for the underwater-image / depth-estimation project.
+#
+# Every script reads its paths and hyper-parameters from this file (via
+# `config.py`). Override any value on the command line where the script exposes
+# an argparse flag, or point `--config` at a different YAML file.
+# =============================================================================
+
+# --- Paths — NYU --------------------------------------------------------------
+nyu_zip_path:      "/datas/sandbox/gmoussa/nyu_data.zip"
+nyu_gt_train_dir:  "/datas/sandbox/gmoussa/ground_truth/nyu/train"
+nyu_gt_test_dir:   "/datas/sandbox/gmoussa/ground_truth/nyu/test"
+
+# --- Paths — Make3D -----------------------------------------------------------
+make3d_train_img_dir:   "/datas/sandbox/gmoussa/Make3D/Train400Img"
+make3d_train_depth_dir: "/datas/sandbox/gmoussa/Make3D/Train400Depth"
+make3d_test_img_dir:    "/datas/sandbox/gmoussa/Make3D/Test134"
+make3d_test_depth_dir:  "/datas/sandbox/gmoussa/Make3D/Test134Depth/Gridlaserdata"
+make3d_gt_train_dir:    "/datas/sandbox/gmoussa/ground_truth/make3d/train"
+make3d_gt_test_dir:     "/datas/sandbox/gmoussa/ground_truth/make3d/test"
+
+# --- Paths — Pre-computed parameter matrices ----------------------------------
+beta_mat_nyu_train:    "/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_train.npy"
+beta_mat_nyu_test:     "/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_test.npy"
+a_mat_nyu_train:       "/datas/sandbox/gmoussa/parameters/A_Mat_NYU_train.npy"
+a_mat_nyu_test:        "/datas/sandbox/gmoussa/parameters/A_Mat_NYU_test.npy"
+beta_mat_make3d_train: "/datas/sandbox/gmoussa/parameters/Beta_Mat_Make_3D_Train.npy"
+beta_mat_make3d_test:  "/datas/sandbox/gmoussa/parameters/Beta_Mat_Make_3D_Test.npy"
+a_mat_make3d_train:    "/datas/sandbox/gmoussa/parameters/A_Mat_Make_3D_Train.npy"
+a_mat_make3d_test:     "/datas/sandbox/gmoussa/parameters/A_Mat_Make_3D_Test.npy"
+
+# --- Paths — Outputs ----------------------------------------------------------
+checkpoint_dir: "/datas/sandbox/gmoussa/checkpoints"
+runs_dir:       "/datas/sandbox/gmoussa/runs"
+
+# --- Training -----------------------------------------------------------------
+batch_size_nyu:          10
+batch_size_make3d:       5
+epochs:                  50
+learning_rate:           1.0e-4    # DenseDepth-style transfer-learning LR. The paper's
+                                   # supplementary used 1e-6, which (together with the old
+                                   # loss weighting) left the depth head essentially at its
+                                   # initialisation -> blurry depth. 1e-4 is the standard value.
+early_stopping_patience: 5
+train_split_ratio:       0.96
+num_workers:             4
+n_parallel_jobs:         20    # for ground-truth pre-computation
+
+# --- Loss weights -------------------------------------------------------------
+lambda_l1:   0.1
+lambda_ssim: 0.1
+lambda_perc: 0.1
+# Depth-branch supervision. The depth term must NOT be ~10x smaller than the
+# image-reconstruction term or the network only fits the (image) target and
+# leaves depth blurry. lambda_grad adds the DenseDepth edge/gradient term that
+# preserves high-frequency depth detail (missing in the original loss).
+lambda_depth: 1.0
+lambda_grad:  1.0
+
+# --- Physics — classical model (Jerlov, per-metre) ----------------------------
+# IMPORTANT: in water RED is attenuated the MOST and blue/green the least
+# (paper, Sec 3.1: "attenuation of red colors can be an order of magnitude
+# larger than blue and green"). The original config had the red and blue lists
+# swapped (red ~0.02, blue ~0.4), which inverted the colour physics and made
+# scenes reddish instead of blue-green. Corrected below.
+beta_val_r: [0.357,  0.416,  0.528,  0.364,  0.423,  0.523]
+beta_val_g: [0.0398, 0.0598, 0.0460, 0.0661]
+beta_val_b: [0.0192, 0.0182, 0.0263, 0.0253]
+
+# --- Physics — complex model (ricardo) ----------------------------------------
+# complex_beta is the transmission coefficient for the ricardo model. It is
+# SEPARATE from the classical Jerlov beta_val above because the ricardo model
+# runs on a per-image 0-255 normalised depth axis, not metres. Feeding the
+# per-metre Jerlov betas here drove exp(-beta*z) with z up to 255 to ~0,
+# collapsing every complex GT to a flat (gray) atmospheric-light frame.
+complex_beta: [0.020, 0.005, 0.010]
+gamma:        [0.1, 0.1, 0.043]
+alpha:        [0.032, 0.032, 0.012]
+turbu_p:      [0.15, 1.5]
+turbu_c:      [34.0, 200.0, 201.0]
+u:            0.99
+s:            2
+depth_add:    0
+depth_levels: 16
+kern_size:    10
+
+# --- Depth --------------------------------------------------------------------
+nyu_max_depth_m:    10.0
+make3d_max_depth_m: 80.0
+depth_norm_max:     1000.0
+
+# --- Model --------------------------------------------------------------------
+pretrained_encoder: true    # ImageNet-pretrained DenseNet-169 encoder (all techniques)
