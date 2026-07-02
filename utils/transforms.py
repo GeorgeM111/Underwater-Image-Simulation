@@ -93,11 +93,11 @@ class ToTensor(object):
         image_norm_0_1 = self.to_tensor(image).float()
         depth_half_0_1 = self.to_tensor(depth_half).float()
 
-        if self.is_test:
-            depth_half_norm_10_1000 = self.to_tensor(depth_half).float() / 1000
-        else:
-            depth_half_norm_10_1000 = self.to_tensor(depth_half).float() * 1000
-
+        # Train and test use the SAME depth scaling. The old is_test branch divided
+        # by 1000, which (with a [0,1] source depth) collapsed every test depth to
+        # the clamp floor of 10 -> a degenerate constant depth map. Depth is the
+        # same 8-bit source in both cases, so both use *1000 -> [10, 1000].
+        depth_half_norm_10_1000 = self.to_tensor(depth_half).float() * 1000
         depth_half_norm_10_1000 = torch.clamp(depth_half_norm_10_1000, 10, 1000)
         return {'image_norm': image_norm_0_1, 'image_half_norm': image_half_norm_0_1,
                 'depth_half_norm_10_1000': depth_half_norm_10_1000, 'depth_half_norm_0_1': depth_half_0_1}

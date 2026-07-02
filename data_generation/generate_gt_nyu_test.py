@@ -8,13 +8,21 @@ import sys
 import time
 import joblib
 from joblib import Parallel, delayed
+from zipfile import ZipFile
 
 from config import CONFIG
 from data_2 import generate_and_save_haze_image_test
 
 
+def _csv_row_count(zip_path, csv_name):
+    """Count non-empty rows the same way loadZipToMemTest parses them, so the
+    range exactly matches the official test CSV instead of a hard-coded end."""
+    with ZipFile(zip_path) as zf:
+        return sum(1 for r in zf.read(csv_name).decode('utf-8').splitlines() if len(r) > 0)
+
+
 START_IDX = 0
-END_IDX = 654
+END_IDX = _csv_row_count(CONFIG.nyu_zip_path, 'data/nyu2_test.csv')
 CHUNK_SIZE = 150
 
 

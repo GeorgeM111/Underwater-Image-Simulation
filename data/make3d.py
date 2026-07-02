@@ -1,10 +1,9 @@
-"""Make3D dataset + dataloaders (single canonical copy).
-
-Consolidates the Make3D logic previously in data_4_Make_3D.py / data_make3d.py.
+"""
+Make3D dataset + dataloaders.
 
 Public interface:
-    get_train_loader(config) -> DataLoader
-    get_test_loader(config)  -> DataLoader
+    get_train_loader(config) ---> DataLoader
+    get_test_loader(config)  --> DataLoader
 """
 
 import os
@@ -18,10 +17,12 @@ from torch.utils.data import Dataset, DataLoader, Subset
 import cv2
 from scipy import io
 
-# Spatial dimensions
-FULL_W, FULL_H = 460, 345
-HALF_W, HALF_H = 230, 173
+from config import CONFIG
 
+# Spatial dimensions [W, H] — from config so the loader stays in sync with the
+# GT generator (data_2.py). Raise make3d_*_size to reduce the blocky look.
+FULL_W, FULL_H = CONFIG.make3d_full_size
+HALF_W, HALF_H = CONFIG.make3d_half_size
 
 def create_reorganize_dimension(data, m, n):
     data = np.reshape(np.array(data, dtype=np.float32), [3, 1, 1])
@@ -35,6 +36,31 @@ def hwc_to_chw(arr):
     return np.ascontiguousarray(arr.transpose(2, 0, 1)).astype(np.float32)
 
 
+def paired_make3d_files(img_dir, depth_dir):
+    """Return (images, depths) paired by shared Make3D scene id (img-<id>.jpg /
+    depth_sph_corr-<id>.mat), so image[i] and depth[i] are the same scene.
+
+    Must produce the SAME order as data_generation (sorted by id) so the
+    positional beta/A/GT indexing stays consistent between generation and loading.
+    """
+    images = glob.glob(os.path.join(img_dir, '*.jpg'))
+    depths = glob.glob(os.path.join(depth_dir, '*.mat'))
+
+    def _img_id(p):
+        return os.path.basename(p).split('img-')[-1].rsplit('.', 1)[0]
+
+    def _dep_id(p):
+        return os.path.basename(p).split('depth_sph_corr-')[-1].rsplit('.', 1)[0]
+
+    dmap = {_dep_id(p): p for p in depths}
+    paired_imgs, paired_deps = [], []
+    for ip in sorted(images, key=_img_id):
+        sid = _img_id(ip)
+        if sid in dmap:
+            paired_imgs.append(ip)
+            paired_deps.append(dmap[sid])
+    return paired_imgs, paired_deps
+
 def _depth_to_tensor(depth_metres, max_depth_m):
     d = torch.from_numpy(depth_metres).float()
     d = d / max_depth_m * 1000.0
@@ -43,7 +69,7 @@ def _depth_to_tensor(depth_metres, max_depth_m):
 
 
 class _Make3DDataset(Dataset):
-    """Make3D dataset (train or test split), driven entirely by config paths."""
+    """Make3D dataset for train/test splits, based on paths in the config file"""
 
     def __init__(self, img_dir, depth_dir, cache_dir, beta_path, a_path,
                  max_depth_m, augment=False):
@@ -51,10 +77,7 @@ class _Make3DDataset(Dataset):
         self.max_depth_m = max_depth_m
         self.augment = augment
 
-        images = glob.glob(os.path.join(img_dir, '*.jpg'))
-        depths = glob.glob(os.path.join(depth_dir, '*.mat'))
-        self.images = sorted(images, key=lambda p: os.path.basename(p).split('img-')[-1])
-        self.depths = sorted(depths, key=lambda p: os.path.basename(p).split('depth_sph_corr-')[-1])
+        self.images, self.depths = paired_make3d_files(img_dir, depth_dir)
 
         self.beta_mat_arr = load(beta_path)
         self.a_mat_arr = load(a_path)
@@ -63,14 +86,14 @@ class _Make3DDataset(Dataset):
         return len(self.images)
 
     def __getitem__(self, idx):
-        # Cached GT is already RGB float in [0, 1] (see data_generation/data_2.py).
         haze_image = load(os.path.join(self.cache_dir, str(idx) + 'haze_image.npy'))
         complex_noisy = load(os.path.join(self.cache_dir, str(idx) + 'complex_haze_image.npy'))
 
         H, W = haze_image.shape[0], haze_image.shape[1]
 
         image_full = cv2.imread(self.images[idx])
-        image_full = cv2.cvtColor(image_full, cv2.COLOR_BGR2RGB)  # cv2 is BGR; pipeline is RGB
+        #because cv2 is BGR but pipeline is RGB
+        image_full = cv2.cvtColor(image_full, cv2.COLOR_BGR2RGB)
         image_full = cv2.resize(image_full, (FULL_W, FULL_H), interpolation=cv2.INTER_LINEAR)
         image_half = cv2.resize(image_full, (HALF_W, HALF_H), interpolation=cv2.INTER_LINEAR)
 
@@ -79,18 +102,14 @@ class _Make3DDataset(Dataset):
         depth_half = cv2.resize(depth_full, (HALF_W, HALF_H), interpolation=cv2.INTER_LINEAR)
         del depth_full
 
-        # To tensors. Images are uint8 [0,255] -> /255; cached GT is already [0,1].
+        # To tensors. Images are uint8 [0,255] -> divide by 255 because cached GT is  [0,1].
         image_full = torch.from_numpy(hwc_to_chw(image_full)).float() / 255.0
         image_half = torch.from_numpy(hwc_to_chw(image_half)).float() / 255.0
         haze_image = torch.from_numpy(hwc_to_chw(haze_image)).float()
         complex_noisy = torch.from_numpy(hwc_to_chw(complex_noisy)).float()
         depth_t = _depth_to_tensor(depth_half, self.max_depth_m)
 
-        # Augmentation: a SINGLE shared horizontal flip applied to every tensor so
-        # image / depth / haze / complex stay pixel-aligned and the input<->GT
-        # relationship is preserved. (The previous code ran independent random
-        # photometric+geometric transforms on each, scrambling the pairing and
-        # corrupting the [0,1] GT with [0,255]-scale brightness/contrast jitter.)
+        # Augmentation: a single shared horizontal flip applied to every tensor so image,depth, haze , and complex stay aligned in the pixel level so that the input <-> GT
         if self.augment and random.random() < 0.5:
             image_full = torch.flip(image_full, dims=[2])
             image_half = torch.flip(image_half, dims=[2])

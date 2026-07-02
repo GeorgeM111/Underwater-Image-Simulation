@@ -98,16 +98,19 @@ class depthDatasetMemory(Dataset):
         unit_mat = self.only_reorganize_dimension(unit_mat)
         complex_noisy_img = self.only_reorganize_dimension(complex_noisy_img)
 
-        image_half_tensor = torch.from_numpy(image_half_numpy)
-        haze_image_tensor = torch.from_numpy(haze_image)
-        a_mat_mod = torch.from_numpy(a_mat_mod)
-        beta_mat_mod = torch.from_numpy(beta_mat_mod)
-        unit_mat = torch.from_numpy(unit_mat)
-        complex_image_tensor = torch.from_numpy(complex_noisy_img)
+        # Cast everything to float32. The Beta/A parameter matrices and unit_mat
+        # are float64, which would otherwise make the physics output Double and
+        # clash with the float32 SSIM window / model weights.
+        image_half_tensor = torch.from_numpy(image_half_numpy).float()
+        haze_image_tensor = torch.from_numpy(haze_image).float()
+        a_mat_mod = torch.from_numpy(a_mat_mod).float()
+        beta_mat_mod = torch.from_numpy(beta_mat_mod).float()
+        unit_mat = torch.from_numpy(unit_mat).float()
+        complex_image_tensor = torch.from_numpy(complex_noisy_img).float()
 
         del complex_noisy_img
 
-        return {'image_full': image_full, 'image_half': image_half_tensor, 'depth': depth_half_10_1000,
+        return {'image_full': image_full.float(), 'image_half': image_half_tensor, 'depth': depth_half_10_1000.float(),
                 'haze_image': haze_image_tensor, 'beta': beta_mat_mod,
                 'a_val': a_mat_mod, 'unit_mat': unit_mat, 'complex_noise_img': complex_image_tensor}
 
@@ -127,25 +130,88 @@ class depthDatasetMemory(Dataset):
         return data
 
 
-def _build_full_dataset(config, transform):
-    data, nyu2_train = loadZipToMem(config.nyu_zip_path)
-    beta_mat_arr = load(config.beta_mat_nyu_train)
-    a_mat_arr = load(config.a_mat_nyu_train)
-    return depthDatasetMemory(data, nyu2_train, beta_mat_arr, a_mat_arr,
-                              gt_dir=config.nyu_gt_train_dir, transform=transform)
+def _build_full_dataset(config, transform, csv='data/nyu2_train.csv',
+                        beta_path=None, a_path=None, gt_dir=None):
+    """Build the full NYU dataset for a given CSV / parameter-matrix / GT dir.
+
+    Defaults reproduce the training split (nyu2_train.csv + *_NYU_train params +
+    nyu_gt_train_dir); pass the test paths to build the official-654 test set.
+    """
+    data, rows = loadZipToMem(config.nyu_zip_path, csv=csv)
+    beta_mat_arr = load(beta_path or config.beta_mat_nyu_train)
+    a_mat_arr = load(a_path or config.a_mat_nyu_train)
+    return depthDatasetMemory(data, rows, beta_mat_arr, a_mat_arr,
+                              gt_dir=gt_dir or config.nyu_gt_train_dir, transform=transform)
+
+
+def _resolve_subset_path(config):
+    """Path to the filtered-indices .npy used in 'subset' mode.
+
+    Uses config.nyu_subset_indices if set, else the size-specific file
+    ``{nyu_subset_size}_filtered_nyu.npy`` in the parameters directory.
+    """
+    p = getattr(config, 'nyu_subset_indices', None)
+    if p:
+        return p
+    params_dir = os.path.dirname(config.beta_mat_nyu_train)
+    return os.path.join(params_dir, "%d_filtered_nyu.npy" % config.nyu_subset_size)
 
 
 def get_train_loader(config):
+    """NYU training loader.
+
+    ``config.nyu_train_mode`` selects the training set:
+        'all'    -> the full training split (indices [0, split_idx))
+        'subset' -> only the filtered indices from _resolve_subset_path(config)
+    Either way, indices are clipped to the training split so the held-out test
+    tail can never leak in.
+    """
     full = _build_full_dataset(config, getDefaultTrainTransform())
     split_idx = int(config.train_split_ratio * len(full))
-    train_subset = Subset(full, list(range(0, split_idx)))
-    return DataLoader(train_subset, config.batch_size_nyu, shuffle=True, drop_last=True,
+
+    mode = getattr(config, 'nyu_train_mode', 'all')
+    if mode == 'subset':
+        path = _resolve_subset_path(config)
+        idx = np.asarray(np.load(path), dtype=np.int64)
+        idx = idx[(idx >= 0) & (idx < split_idx)]      # keep only training-pool indices
+        if idx.size == 0:
+            raise ValueError(
+                "nyu_train_mode='subset' but '%s' has no indices in the training "
+                "split [0, %d)." % (path, split_idx))
+        indices = idx.tolist()
+        print("[data.nyu] train mode=subset  file=%s  using %d/%d images"
+              % (path, len(indices), split_idx))
+    else:
+        indices = list(range(0, split_idx))
+        print("[data.nyu] train mode=all  using full training split (%d images)" % split_idx)
+
+    return DataLoader(Subset(full, indices), config.batch_size_nyu, shuffle=True, drop_last=True,
                       num_workers=config.num_workers)
 
 
 def get_test_loader(config):
+    """NYU test loader.
+
+    ``config.nyu_test_mode`` selects the test set:
+        'tail'     -> held-out tail of nyu2_train (indices [split_idx, end)); this
+                      is the paper's 96%/4% protocol and the DEFAULT. Its GT lives
+                      in nyu_gt_train_dir (produced by the train GT generation).
+        'official' -> the official NYU-v2 654-image test set (nyu2_test.csv), with
+                      its own params (*_NYU_test) and GT (nyu_gt_test_dir).
+    """
+    mode = getattr(config, 'nyu_test_mode', 'tail')
+    if mode == 'official':
+        full = _build_full_dataset(
+            config, getNoTransform(is_test=True), csv='data/nyu2_test.csv',
+            beta_path=config.beta_mat_nyu_test, a_path=config.a_mat_nyu_test,
+            gt_dir=config.nyu_gt_test_dir)
+        print("[data.nyu] test mode=official  using %d images (nyu2_test.csv)" % len(full))
+        return DataLoader(full, config.batch_size_nyu, shuffle=False, drop_last=True,
+                          num_workers=config.num_workers)
+
     full = _build_full_dataset(config, getNoTransform(is_test=True))
     split_idx = int(config.train_split_ratio * len(full))
     test_subset = Subset(full, list(range(split_idx, len(full))))
+    print("[data.nyu] test mode=tail  using held-out tail (%d images)" % len(test_subset))
     return DataLoader(test_subset, config.batch_size_nyu, shuffle=False, drop_last=True,
                       num_workers=config.num_workers)

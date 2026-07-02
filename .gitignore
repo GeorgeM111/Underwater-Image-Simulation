@@ -1,42 +1,68 @@
-#system 
-.cache/
-.config/
-.local/
-.vscode-server/
-.keras/
-.nv/
-.dotnet/
-.claude/
-.copilot/
-.ssh/
-.gitconfig
+# =============================================================================
+# This git repository lives in the user's $HOME directory. To make sure NO home
+# junk (caches, credentials, shell history, ...) is ever committed, we ignore
+# everything by default and then explicitly re-include the project.
+# =============================================================================
 
-#training 
-runs/
-checkpoint/
-checkpoints/
-outputs/
-logs/
+# --- ignore everything at the repo root by default ---
+/*
 
-#python 
+# --- project: top-level files to keep ---
+!/.gitignore
+!/README.md
+!/TASKS.md
+!/config.py
+!/config.yaml
+!/requirements.txt
+!/environment.yml
+!/pyproject.toml
+!/infer.py
+
+# --- project: code directories to keep ---
+!/Technique_1/
+!/Technique_2/
+!/Technique_3/
+!/Technique_4/
+!/CycleGAN/
+!/Pix2Pix_GAN/
+!/Encoder_Decoder_Direct/
+!/data/
+!/data_generation/
+!/models/
+!/utils/
+
+# =============================================================================
+# Within the re-included project dirs, still exclude generated / heavy artifacts
+# =============================================================================
+
+# python / caches
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# model weights, datasets, precomputed arrays (these live on /datas, not in git)
 *.pt
 *.pth
 *.ckpt
 *.npy
+*.npz
+*.mat
+*.zip
+*.h5
 
-#system files 
-.bash_history
-.claude.json
-.wget-hsts
+# training outputs / logs
+runs/
+logs/
+train_logs/
+outputs/
+checkpoint/
+checkpoints/
+
+# editor / misc
 *.swp
+*.swo
+.DS_Store
 
-#project
-Encoder_Decoder_Direct/
-MUNIT/
-Pix2Pix_GAN/
-UNIT/
-DRIT/
-CycleGAN/
-
+# stray files from mistyped command redirects
+/--*

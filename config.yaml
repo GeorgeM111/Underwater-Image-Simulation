@@ -19,6 +19,17 @@ make3d_test_depth_dir:  "/datas/sandbox/gmoussa/Make3D/Test134Depth/Gridlaserdat
 make3d_gt_train_dir:    "/datas/sandbox/gmoussa/ground_truth/make3d/train"
 make3d_gt_test_dir:     "/datas/sandbox/gmoussa/ground_truth/make3d/test"
 
+# --- Paths — KITTI (raw dataset; depth is PROJECTED from Velodyne LiDAR) -------
+kitti_raw_dir:      "/datas/sandbox/gmoussa/kitti"
+kitti_gt_train_dir: "/datas/sandbox/gmoussa/ground_truth/kitti/train"
+kitti_gt_test_dir:  "/datas/sandbox/gmoussa/ground_truth/kitti/test"
+kitti_max_depth_m:  80.0
+# Informative-subset selection for KITTI (filter_kitti_subset.py)
+kitti_subset_size:       10000
+kitti_subset_w_entropy:  0.3333
+kitti_subset_w_gradient: 0.3333
+kitti_subset_w_depth:    0.3333
+
 # --- Paths — Pre-computed parameter matrices ----------------------------------
 beta_mat_nyu_train:    "/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_train.npy"
 beta_mat_nyu_test:     "/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_test.npy"
@@ -44,7 +55,32 @@ learning_rate:           1.0e-4    # DenseDepth-style transfer-learning LR. The 
 early_stopping_patience: 5
 train_split_ratio:       0.96
 num_workers:             4
-n_parallel_jobs:         20    # for ground-truth pre-computation
+n_parallel_jobs:         6     # for GT pre-computation; each worker loads the full ~5GB NYU zip, so keep low to avoid OOM
+
+# --- Informative-subset selection (filter_nyu_subset.py) ----------------------
+# Composite score = w_ent*entropy + w_grad*gradient + w_depth*depth_range,
+# each term min-max normalised across the dataset. Weights need not sum to 1.
+nyu_subset_size:       10000   # number of most-informative NYU images to keep
+nyu_subset_w_entropy:  0.3333  # weight: Shannon entropy of the grayscale image
+nyu_subset_w_gradient: 0.3333  # weight: mean Sobel gradient magnitude (detail)
+nyu_subset_w_depth:    0.3333  # weight: depth range (max-min over valid pixels)
+
+# How NYU techniques/baselines pick their training set (data.nyu.get_train_loader):
+#   nyu_train_mode: "all"    -> full NYU training split
+#                   "subset" -> only the indices in nyu_subset_indices
+# nyu_subset_indices: path to the .npy of indices; leave blank to auto-use
+#   {nyu_subset_size}_filtered_nyu.npy in the parameters dir.
+nyu_train_mode:     "subset" # "subset"-> train on filtered subsets | "all" - train on the whole dataset
+nyu_subset_indices:            # blank -> auto ({nyu_subset_size}_filtered_nyu.npy)
+
+# How the NYU test set is chosen (data.nyu.get_test_loader):
+#   "tail"     -> held-out tail of nyu2_train (paper's 96/4 protocol; DEFAULT)
+#   "official" -> official NYU-v2 654 test set (nyu2_test.csv + *_NYU_test params/GT)
+nyu_test_mode:      "tail"
+
+# Seed for parameter-matrix (beta / atmospheric-light) generation, so regenerating
+# them is reproducible and cannot silently desync from the pre-computed GT.
+random_seed:        42
 
 # --- Loss weights -------------------------------------------------------------
 lambda_l1:   0.1
@@ -73,7 +109,28 @@ beta_val_b: [0.0192, 0.0182, 0.0263, 0.0253]
 # runs on a per-image 0-255 normalised depth axis, not metres. Feeding the
 # per-metre Jerlov betas here drove exp(-beta*z) with z up to 255 to ~0,
 # collapsing every complex GT to a flat (gray) atmospheric-light frame.
-complex_beta: [0.020, 0.005, 0.010]
+complex_beta: [0.020, 0.005, 0.010]   # fallback water type (superseded by jerlov_water_types)
+
+# Per-image water-type menu (classical Jerlov scale, [R, G, B] attenuation). ONE
+# type is sampled per image and drives the classical haze, the ricardo
+# transmission AND the airlight -> images vary blue<->green. Red is always
+# attenuated most. Oceanic: blue least attenuated (B<G<R). Coastal: green least (G<B<R).
+jerlov_water_types:
+  - [0.30, 0.05, 0.02]   # oceanic I
+  - [0.32, 0.06, 0.03]   # oceanic IA
+  - [0.34, 0.07, 0.04]   # oceanic IB
+  - [0.38, 0.08, 0.05]   # oceanic II
+  - [0.42, 0.09, 0.07]   # oceanic III
+  - [0.40, 0.06, 0.08]   # coastal 1C
+  - [0.45, 0.07, 0.11]   # coastal 3C
+  - [0.50, 0.09, 0.15]   # coastal 5C
+  - [0.55, 0.11, 0.19]   # coastal 7C
+  - [0.62, 0.13, 0.24]   # coastal 9C
+# Maps a classical Jerlov beta (haze axis ~[0,10]) to the ricardo 0-255 axis:
+# beta_ricardo = beta * complex_beta_scale.
+complex_beta_scale: 0.04
+# Airlight/veiling colour = normalise(exp(-beta_ricardo * airlight_bg_depth)) -> red-depleted.
+airlight_bg_depth: 150.0
 gamma:        [0.1, 0.1, 0.043]
 alpha:        [0.032, 0.032, 0.012]
 turbu_p:      [0.15, 1.5]
@@ -87,6 +144,10 @@ kern_size:    10
 # --- Depth --------------------------------------------------------------------
 nyu_max_depth_m:    10.0
 make3d_max_depth_m: 80.0
+# Make3D processing resolution [W, H] — raise to reduce the blocky/pixelated look
+# (keep the generator and the data.make3d loader in sync).
+make3d_full_size: [460, 345]
+make3d_half_size: [230, 173]
 depth_norm_max:     1000.0
 
 # --- Model --------------------------------------------------------------------

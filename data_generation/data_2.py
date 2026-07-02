@@ -41,6 +41,67 @@ beta_val_b = CONFIG.beta_val_b
 # live alongside it (replaces the old hard-coded /datas/.../parameters dir).
 _PARAMS_DIR = _os.path.dirname(CONFIG.beta_mat_nyu_train)
 
+
+def _paired_make3d_files(img_dir, depth_dir):
+    """Return (images, depths) paired by shared Make3D scene id.
+
+    Make3D files are ``img-<id>.jpg`` / ``depth_sph_corr-<id>.mat``. Globbing and
+    sorting the two lists INDEPENDENTLY and zipping them by position silently
+    misaligns every pair if a single file is missing/extra; pairing by the shared
+    id guarantees image[i] and depth[i] are the same scene. The order (sorted by
+    id) is deterministic and identical to the loader, so the positional beta/A
+    indexing stays consistent.
+    """
+    images = glob.glob(_os.path.join(img_dir, '*.jpg'))
+    depths = glob.glob(_os.path.join(depth_dir, '*.mat'))
+
+    def _img_id(p):
+        return _os.path.basename(p).split('img-')[-1].rsplit('.', 1)[0]
+
+    def _dep_id(p):
+        return _os.path.basename(p).split('depth_sph_corr-')[-1].rsplit('.', 1)[0]
+
+    dmap = {_dep_id(p): p for p in depths}
+    paired_imgs, paired_deps = [], []
+    for ip in sorted(images, key=_img_id):
+        sid = _img_id(ip)
+        if sid in dmap:
+            paired_imgs.append(ip)
+            paired_deps.append(dmap[sid])
+    return paired_imgs, paired_deps
+
+
+def _seed_params(offset=0):
+    """Seed the RNGs so parameter-matrix (beta / atmospheric-light) generation is
+    reproducible. A re-run then yields the SAME matrices, so the pre-computed GT
+    can never silently desync from a regenerated matrix. Distinct offsets keep the
+    four splits (NYU train/test, Make3D train/test) independent."""
+    seed = int(getattr(CONFIG, 'random_seed', 42)) + offset
+    random.seed(seed)
+    np.random.seed(seed)
+
+
+def _water_airlight(brightness, beta=None):
+    """Water-coloured (red-depleted) veiling light for THIS image's water type.
+
+    A GRAY airlight makes the haze term (1 - t) * A dump equal brightness into
+    every channel, so the most-attenuated channel (red) becomes the BRIGHTEST ->
+    a pink/gray veil. Real underwater veiling light is the water colour: ambient
+    light that has travelled a background distance keeps the low-attenuation
+    wavelengths and loses red. We derive that colour from the image's own water
+    type ``beta`` (rescaled to the ricardo axis, the same coefficients the
+    transmission uses), so the airlight matches the scene's water — blue for
+    oceanic types, green for coastal ones. ``brightness`` (0-1) scales intensity.
+    ``beta`` is the classical Jerlov triple; if None, falls back to complex_beta.
+    """
+    if beta is None:
+        cb = np.asarray(CONFIG.complex_beta, dtype=np.float64)
+    else:
+        cb = np.asarray(beta, dtype=np.float64) * CONFIG.complex_beta_scale
+    water = np.exp(-cb * CONFIG.airlight_bg_depth)   # [R, G, B]; red << surviving channel
+    water = water / water.max()                       # brightest channel -> 1
+    return (brightness * water).tolist()
+
 # loader uses the transforms function that comes with torchvision
 # here we will pre-compute the images and will save them from before. Later, we will just load the images inside the get_item() function
 
@@ -138,7 +199,7 @@ def loadZipToMemTest(zip_file):
 #GM ------------------------------ BETA AND ATMOSPHERIC LIGHT START -------
 #GM - NYU TRAIN
 def generate_and_save_atmosphere_light_beta():
-    print
+    _seed_params(0)
     data, nyu2_train = loadZipToMem(CONFIG.nyu_zip_path)
     data_len = len(nyu2_train)
     #GM
@@ -152,11 +213,9 @@ def generate_and_save_atmosphere_light_beta():
     for x in range(data_len):
         if idx % 1000 == 0:
             print(f"Generating water type for {idx} - {idx+1000}...")
-        rand_indx_r = random.randint(0, len(beta_val_r) - 1)
-        rand_indx_g = random.randint(0, len(beta_val_g) - 1)
-        rand_indx_b = random.randint(0, len(beta_val_b) - 1)
-
-        beta_mat = [beta_val_r[rand_indx_r], beta_val_g[rand_indx_g], beta_val_b[rand_indx_b]]
+        # Sample ONE Jerlov water type for this image (blue-oceanic .. green-coastal),
+        # instead of drawing each channel independently (which fixed the ordering).
+        beta_mat = list(random.choice(CONFIG.jerlov_water_types))
         beta_arr.append(beta_mat)
 
         # a_mat = [random.uniform(0, 1), random.uniform(0, 1), random.uniform(0, 1)]
@@ -164,7 +223,7 @@ def generate_and_save_atmosphere_light_beta():
         #GM - a gray ambient light that models the surface light only.
         #GM - color comes purely from the water wavelength dependent absorption beta.
         rand_val_a = random.uniform(0, 1)
-        a_mat = [rand_val_a, rand_val_a, rand_val_a]
+        a_mat = _water_airlight(rand_val_a, beta_mat)   # airlight tinted by THIS image's water type
 
         a_mat_arr.append(a_mat)
         idx = idx+ 1
@@ -175,6 +234,7 @@ def generate_and_save_atmosphere_light_beta():
 
 #GM - NYU TEST
 def generate_and_save_atmosphere_light_beta_test():
+    _seed_params(1)
     data, nyu2_test = loadZipToMemTest(CONFIG.nyu_zip_path)
     data_len = len(nyu2_test)
     #GM
@@ -185,17 +245,15 @@ def generate_and_save_atmosphere_light_beta_test():
     a_mat_arr = []
     for x in range(data_len):
 
-        rand_indx_r = random.randint(0, len(beta_val_r) - 1)
-        rand_indx_g = random.randint(0, len(beta_val_g) - 1)
-        rand_indx_b = random.randint(0, len(beta_val_b) - 1)
-
-        beta_mat = [beta_val_r[rand_indx_r], beta_val_g[rand_indx_g], beta_val_b[rand_indx_b]]
+        # Sample ONE Jerlov water type for this image (blue-oceanic .. green-coastal),
+        # instead of drawing each channel independently (which fixed the ordering).
+        beta_mat = list(random.choice(CONFIG.jerlov_water_types))
         beta_arr.append(beta_mat)
 
         # a_mat = [random.uniform(0, 1), random.uniform(0, 1), random.uniform(0, 1)]
 
         rand_val_a = random.uniform(0, 1)
-        a_mat = [rand_val_a, rand_val_a, rand_val_a]
+        a_mat = _water_airlight(rand_val_a, beta_mat)   # airlight tinted by THIS image's water type
 
         a_mat_arr.append(a_mat)
 
@@ -206,8 +264,9 @@ def generate_and_save_atmosphere_light_beta_test():
 
 #GM - Make3D Train
 def generate_and_save_atmosphere_light_beta_make_3D():
-
-    train_images = glob.glob(_os.path.join(CONFIG.make3d_train_img_dir, '*.jpg'))
+    _seed_params(2)
+    # Use the id-paired file list so the matrix length matches the GT count exactly.
+    train_images, _ = _paired_make3d_files(CONFIG.make3d_train_img_dir, CONFIG.make3d_train_depth_dir)
     data_len = len(train_images)
     del train_images
 
@@ -215,28 +274,28 @@ def generate_and_save_atmosphere_light_beta_make_3D():
     a_mat_arr = []
     for x in range(data_len):
 
-        rand_indx_r = random.randint(0, len(beta_val_r) - 1)
-        rand_indx_g = random.randint(0, len(beta_val_g) - 1)
-        rand_indx_b = random.randint(0, len(beta_val_b) - 1)
-
-        beta_mat = [beta_val_r[rand_indx_r], beta_val_g[rand_indx_g], beta_val_b[rand_indx_b]]
+        # Sample ONE Jerlov water type for this image (blue-oceanic .. green-coastal),
+        # instead of drawing each channel independently (which fixed the ordering).
+        beta_mat = list(random.choice(CONFIG.jerlov_water_types))
         beta_arr.append(beta_mat)
 
         # a_mat = [random.uniform(0, 1), random.uniform(0, 1), random.uniform(0, 1)]
 
         rand_val_a = random.uniform(0, 1)
-        a_mat = [rand_val_a, rand_val_a, rand_val_a]
+        a_mat = _water_airlight(rand_val_a, beta_mat)   # airlight tinted by THIS image's water type
 
         a_mat_arr.append(a_mat)
 
     save(_os.path.join(_PARAMS_DIR, 'A_Mat_Make_3D_Train.npy'), a_mat_arr)
     save(_os.path.join(_PARAMS_DIR, 'Beta_Mat_Make_3D_Train.npy'), beta_arr)
     #GM - 1 line
-    print("Sucessfully generated Beta and Atmospheric Light matrices for NYU - Train.")
+    print("Sucessfully generated Beta and Atmospheric Light matrices for Make3D - Train.")
 
 #GM - Make3D Test
 def generate_and_save_atmosphere_light_beta_make_3D_Test():
-    train_images = glob.glob(_os.path.join(CONFIG.make3d_test_img_dir, '*.jpg'))
+    _seed_params(3)
+    # Use the id-paired file list so the matrix length matches the GT count exactly.
+    train_images, _ = _paired_make3d_files(CONFIG.make3d_test_img_dir, CONFIG.make3d_test_depth_dir)
     data_len = len(train_images)
     del train_images
 
@@ -244,17 +303,15 @@ def generate_and_save_atmosphere_light_beta_make_3D_Test():
     a_mat_arr = []
     for x in range(data_len):
 
-        rand_indx_r = random.randint(0, len(beta_val_r) - 1)
-        rand_indx_g = random.randint(0, len(beta_val_g) - 1)
-        rand_indx_b = random.randint(0, len(beta_val_b) - 1)
-
-        beta_mat = [beta_val_r[rand_indx_r], beta_val_g[rand_indx_g], beta_val_b[rand_indx_b]]
+        # Sample ONE Jerlov water type for this image (blue-oceanic .. green-coastal),
+        # instead of drawing each channel independently (which fixed the ordering).
+        beta_mat = list(random.choice(CONFIG.jerlov_water_types))
         beta_arr.append(beta_mat)
 
         # a_mat = [random.uniform(0, 1), random.uniform(0, 1), random.uniform(0, 1)]
 
         rand_val_a = random.uniform(0, 1)
-        a_mat = [rand_val_a, rand_val_a, rand_val_a]
+        a_mat = _water_airlight(rand_val_a, beta_mat)   # airlight tinted by THIS image's water type
 
         a_mat_arr.append(a_mat)
 
@@ -268,15 +325,19 @@ def generate_and_save_atmosphere_light_beta_make_3D_Test():
 #GM ------------------------------ GROUND TRUTH GENERATION START -------
 
 #GM- NYU TRAIN
-def generate_and_save_haze_image(stIndex, endIndex):
+def generate_and_save_haze_image(stIndex, endIndex, indices=None):
+    """Generate + save NYU haze/complex GT.
+
+    If ``indices`` is given (an iterable of dataset indices), ONLY those images
+    are generated (used to build GT for a filtered subset); ``stIndex``/``endIndex``
+    are then ignored. Otherwise the contiguous range [stIndex, endIndex) is used.
+    """
     data, nyu_dataset = loadZipToMem(CONFIG.nyu_zip_path)
     a_mat_arr = load(_os.path.join(_PARAMS_DIR, 'A_Mat_NYU_train.npy'))
     beta_mat_arr = load(_os.path.join(_PARAMS_DIR, 'Beta_Mat_NYU_train.npy'))
-    # keep_all_haze_image = []
-    # keep_all_complex_haze_image = []
-    # keep_all_depth_half_3d = []
-    # for idx in range(len(nyu_dataset)):
-    for idx in range(stIndex, endIndex):
+    targets = list(indices) if indices is not None else range(stIndex, endIndex)
+    for idx in targets:
+        idx = int(idx)
         sample = nyu_dataset[idx]
         image = Image.open(BytesIO(data[sample[0]]))
         depth = Image.open(BytesIO(data[sample[1]]))
@@ -439,11 +500,8 @@ def generate_and_save_haze_image_test(stIndex, endIndex):
 #GM - Make3D Train
 def generate_and_save_ricardo_image_make_3D(stIndex, endIndex):
     
-    train_images = glob.glob(_os.path.join(CONFIG.make3d_train_img_dir, '*.jpg'))
-    train_depth = glob.glob(_os.path.join(CONFIG.make3d_train_depth_dir, '*.mat'))
-
-    train_images = sorted(train_images, key=lambda p: p.split('/')[-1].split('img-')[-1])
-    train_depth = sorted(train_depth, key=lambda p: p.split('/')[-1].split('depth_sph_corr-')[-1])
+    train_images, train_depth = _paired_make3d_files(
+        CONFIG.make3d_train_img_dir, CONFIG.make3d_train_depth_dir)
 
     a_mat_arr = load(_os.path.join(_PARAMS_DIR, 'A_Mat_Make_3D_Train.npy'))
     beta_mat_arr = load(_os.path.join(_PARAMS_DIR, 'Beta_Mat_Make_3D_Train.npy'))
@@ -454,11 +512,11 @@ def generate_and_save_ricardo_image_make_3D(stIndex, endIndex):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # cv2 loads BGR; keep the whole pipeline RGB
         depth = io.loadmat(train_depth[idx])['Position3DGrid'][:, :, 3]
 
-        image = cv2.resize(image, (460, 345), interpolation=cv2.INTER_LINEAR)
-        depth = cv2.resize(depth, (460, 345), interpolation=cv2.INTER_LINEAR)
+        image = cv2.resize(image, tuple(CONFIG.make3d_full_size), interpolation=cv2.INTER_LINEAR)
+        depth = cv2.resize(depth, tuple(CONFIG.make3d_full_size), interpolation=cv2.INTER_LINEAR)
 
-        image_half = cv2.resize(image, (230, 173), interpolation=cv2.INTER_LINEAR)
-        depth_half_m = cv2.resize(depth, (230, 173), interpolation=cv2.INTER_LINEAR)  # metres
+        image_half = cv2.resize(image, tuple(CONFIG.make3d_half_size), interpolation=cv2.INTER_LINEAR)
+        depth_half_m = cv2.resize(depth, tuple(CONFIG.make3d_half_size), interpolation=cv2.INTER_LINEAR)  # metres
 
         del image, depth
 
@@ -526,11 +584,8 @@ def generate_and_save_ricardo_image_make_3D(stIndex, endIndex):
 
 #GM - Make3DTest
 def generate_and_save_ricardo_image_make_3D_Test(stIndex, endIndex):
-    train_images = glob.glob(_os.path.join(CONFIG.make3d_test_img_dir, '*.jpg'))
-    train_depth = glob.glob(_os.path.join(CONFIG.make3d_test_depth_dir, '*.mat'))
-
-    train_images = sorted(train_images, key=lambda p: p.split('/')[-1].split('img-')[-1])
-    train_depth = sorted(train_depth, key=lambda p: p.split('/')[-1].split('depth_sph_corr-')[-1])
+    train_images, train_depth = _paired_make3d_files(
+        CONFIG.make3d_test_img_dir, CONFIG.make3d_test_depth_dir)
 
     a_mat_arr = load(_os.path.join(_PARAMS_DIR, 'A_Mat_Make_3D_Test.npy'))
     beta_mat_arr = load(_os.path.join(_PARAMS_DIR, 'Beta_Mat_Make_3D_Test.npy'))
@@ -541,11 +596,11 @@ def generate_and_save_ricardo_image_make_3D_Test(stIndex, endIndex):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # cv2 loads BGR; keep the whole pipeline RGB
         depth = io.loadmat(train_depth[idx])['Position3DGrid'][:, :, 3]
 
-        image = cv2.resize(image, (460, 345), interpolation=cv2.INTER_LINEAR)
-        depth = cv2.resize(depth, (460, 345), interpolation=cv2.INTER_LINEAR)
+        image = cv2.resize(image, tuple(CONFIG.make3d_full_size), interpolation=cv2.INTER_LINEAR)
+        depth = cv2.resize(depth, tuple(CONFIG.make3d_full_size), interpolation=cv2.INTER_LINEAR)
 
-        image_half = cv2.resize(image, (230, 173), interpolation=cv2.INTER_LINEAR)
-        depth_half_m = cv2.resize(depth, (230, 173), interpolation=cv2.INTER_LINEAR)  # metres
+        image_half = cv2.resize(image, tuple(CONFIG.make3d_half_size), interpolation=cv2.INTER_LINEAR)
+        depth_half_m = cv2.resize(depth, tuple(CONFIG.make3d_half_size), interpolation=cv2.INTER_LINEAR)  # metres
 
         del image, depth
 

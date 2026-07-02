@@ -55,7 +55,12 @@ def ssim(img1, img2, val_range, window_size=11, window=None, size_average=True, 
     ssim_map = ((2 * mu1_mu2 + C1) * v1) / ((mu1_sq + mu2_sq + C1) * v2)
 
     if size_average:
-        ret = ssim_map.nanmean()
+        # nan-safe mean; Tensor.nanmean() only exists on torch>=1.8, so fall
+        # back to an explicit NaN-masked mean on older torch.
+        if hasattr(ssim_map, "nanmean"):
+            ret = ssim_map.nanmean()
+        else:
+            ret = ssim_map[~torch.isnan(ssim_map)].mean()
     else:
         ret = ssim_map.mean(1).mean(1).mean(1)
 

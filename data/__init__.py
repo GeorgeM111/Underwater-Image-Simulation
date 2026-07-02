@@ -1,7 +1,8 @@
-"""Dataset package.
+"""
 
-Each dataset module exposes a uniform interface::
+This is a dataaset package.
 
+Each dataset module exposes a uniform interface:
     from data import nyu, make3d, kitti
     train_loader = nyu.get_train_loader(config)
     test_loader  = nyu.get_test_loader(config)

@@ -22,7 +22,7 @@ import torch.nn as nn
 
 from config import load_config
 from models.model_builder import build_models
-from data.make3d import get_train_loader
+from data.make3d import get_train_loader, get_val_loader
 from utils.helpers import AverageMeter, DepthNorm
 from utils.physics import compute_haze_image, compute_complex_image
 from utils.loss import ssim
@@ -56,6 +56,7 @@ def main():
     l1 = nn.L1Loss()
     lambda_l1, lambda_ssim, lambda_perc = cfg.lambda_l1, cfg.lambda_ssim, cfg.lambda_perc
     train_loader = get_train_loader(cfg)
+    val_loader = get_val_loader(cfg)
     writer = make_writer(cfg, TECHNIQUE, DATASET, VARIANT, args.logdir)
 
     start_epoch = 0
@@ -71,6 +72,8 @@ def main():
         return torch.clamp((1 - ssim(pred, target, val_range=vr)) * 0.5, 0, 1)
 
     best_loss = float('inf')
+    patience = cfg.early_stopping_patience
+    epochs_no_improve = 0
     for epoch in range(start_epoch, cfg.epochs):
         model_1.train()
         model_2.train()
@@ -92,8 +95,8 @@ def main():
 
             out_depth, w_depth = model_1(image_full)
             out_bb, w_bb = model_2(image_full)
-            pred_complex = compute_complex_image(out_depth, out_bb, beta, a_val, unit, image_half)
-            pred_haze = compute_haze_image(out_depth, beta, a_val, unit, image_half)
+            pred_complex = compute_complex_image(out_depth, out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
+            pred_haze = compute_haze_image(out_depth, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
             w_depth = torch.mean(w_depth, dim=0)
             w_bb = torch.mean(w_bb, dim=0)
             loss_depth = (1.0 - w_depth[0]) * ssim_loss(out_depth, depth_n, 1000.0 / 10.0) + w_depth[0] * l1(out_depth, depth_n)
@@ -137,9 +140,40 @@ def main():
             _tb_images['direct/pred'] = out_direct
         log_images(writer, epoch, _tb_images)
         writer.flush()
-        print('[T%d %s %s] epoch %d/%d  loss=%.4f' % (TECHNIQUE, DATASET, VARIANT, epoch, cfg.epochs - 1, meter.avg))
-        if meter.avg < best_loss:
-            best_loss = meter.avg
+        # ---- validation on held-out split (drives checkpointing + early stopping) ----
+        model_1.eval()
+        model_2.eval()
+        if model_3 is not None:
+            model_3.eval()
+        val_meter = AverageMeter()
+        with torch.no_grad():
+            for batch in val_loader:
+                image_full = batch['image_full'].to(device)
+                image_half = batch['image_half'].to(device)
+                depth_n = DepthNorm(batch['depth'].to(device))
+                haze = batch['haze_image'].to(device)
+                beta = batch['beta'].to(device)
+                a_val = batch['a_val'].to(device)
+                unit = batch['unit_mat'].to(device)
+                complex_gt = batch['complex_noise_img'].to(device)
+                out_depth, w_depth = model_1(image_full)
+                out_bb, w_bb = model_2(image_full)
+                pred_complex = compute_complex_image(out_depth, out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
+                pred_haze = compute_haze_image(out_depth, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
+                w_depth = torch.mean(w_depth, dim=0)
+                w_bb = torch.mean(w_bb, dim=0)
+                loss_depth = (1.0 - w_depth[0]) * ssim_loss(out_depth, depth_n, 1000.0 / 10.0) + w_depth[0] * l1(out_depth, depth_n)
+                loss_complex = (1.0 - w_bb[0]) * ssim_loss(pred_complex, complex_gt, 1) + w_bb[0] * l1(pred_complex, complex_gt)
+                loss_haze = (1.0 - w_bb[1]) * ssim_loss(pred_haze, haze, 1) + w_bb[1] * l1(pred_haze, haze)
+                v_loss = loss_depth + loss_complex + loss_haze
+                val_meter.update(v_loss.item(), image_full.size(0))
+        val_avg = val_meter.avg
+        log_scalars(writer, epoch, {'loss/val_total': val_avg})
+        writer.flush()
+        print('[T%d %s %s] epoch %d/%d  train=%.4f  val=%.4f' % (TECHNIQUE, DATASET, VARIANT, epoch, cfg.epochs - 1, meter.avg, val_avg))
+        if val_avg < best_loss:
+            best_loss = val_avg
+            epochs_no_improve = 0
             os.makedirs(cfg.checkpoint_dir, exist_ok=True)
             state = {'state_dict_1': model_1.state_dict(), 'state_dict_2': model_2.state_dict(),
                      'cur_epoch': epoch, 'best_loss': best_loss}
@@ -147,6 +181,11 @@ def main():
                 state['state_dict_3'] = model_3.state_dict()
             ckpt_name = 'T%d_%s_%s.ckpt' % (TECHNIQUE, DATASET, VARIANT)
             torch.save(state, os.path.join(cfg.checkpoint_dir, ckpt_name))
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= patience:
+                print('[T%d %s %s] early stopping at epoch %d (no val improvement for %d epochs)' % (TECHNIQUE, DATASET, VARIANT, epoch, patience))
+                break
 
 
 if __name__ == '__main__':

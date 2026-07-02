@@ -217,11 +217,12 @@ def outTotal(rgb, depht, I_out, gamma, alpha, beta, A_light):
 
 
 def processImg(imgD_Norm, imgRGB, beta, A_light):
-    # NOTE: the ``beta`` argument (the per-image classical Jerlov coefficient) is
-    # intentionally IGNORED for the transmission term. The ricardo model operates
-    # on a 0-255 normalised depth axis and uses the dedicated ``complex_beta``
-    # (small) coefficients; feeding per-metre Jerlov betas here collapses the
-    # output to a flat gray frame. The argument is kept only for call-site parity.
+    # ``beta`` is this image's classical Jerlov water type ([R,G,B], per-metre
+    # scale). The ricardo transmission runs on a 0-255 depth axis, so we rescale
+    # it: beta_ricardo = beta * complex_beta_scale. This makes the complex GT
+    # follow the SAME per-image water type as the haze/airlight (blue vs green),
+    # instead of a single fixed complex_beta for every image.
+    beta_ricardo = (np.asarray(beta, dtype=np.float64) * CONFIG.complex_beta_scale).tolist()
     imgD_Norm += depth_add  # add a minimum to depth map
 
     imgD_Norm_T = torch.from_numpy(imgD_Norm)
@@ -233,7 +234,7 @@ def processImg(imgD_Norm, imgRGB, beta, A_light):
 
     # Compute total model (scattering & loss + attenuation + ambient)
     I_total = outTotal(imgRGB.astype(np.float32), imgD_Norm.astype(np.float32), I_out, gamma, alpha,
-                       complex_beta, A_light)
+                       beta_ricardo, A_light)
 
     # particle turbidity effect
     dim = I_total.shape
