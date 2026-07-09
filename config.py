@@ -182,10 +182,43 @@ _DEFAULTS = {
     # reproduces the original matrices exactly.
     "nyu_airlight_brightness_min": 0.0,
     "make3d_airlight_brightness_min": 0.0,
+    # Complex (ricardo) forward-model version:
+    #   "ricardo" -> the original code that produced the paper's figures
+    #   "v2"      -> corrected: untruncated Gaussian PSF (P1), energy-conserving
+    #                (1-k) scatter weighting (P2), Eq.6 hygiene (P4). See utils/physics.
+    "complex_model": "ricardo",
+    # Scattering depth axis: "normalized" (per-image 0-255, the original) or "metric"
+    # (true metres, using gamma_angular/alpha_metric + per-dataset focal length).
+    "complex_depth_mode": "metric",
+    # --- P3: physically-grounded scattering -------------------------------------
+    # In pixels the PSF width is  sigma_px = f_px * gamma_angular_c * z_metres * clarity.
+    # gamma_angular is ONE physical constant (rad/m) shared by every dataset; the pixel
+    # blur differs only because the CAMERAS differ (focal length) and because a dataset
+    # may be simulated under clearer water (clarity). Calibrated so NYU reproduces its
+    # previous look (sigma=25.5px at z=10m, f=259.4).
+    "gamma_angular": [0.0098292, 0.0098292, 0.0042266],   # rad / metre, per channel
+    # Straight-path attenuation k_c = exp(-alpha_metric_c * z_m * clarity). Calibrated
+    # from the old 0-255-axis alpha: alpha_metric = alpha * 255 / nyu_max_depth_m.
+    "alpha_metric": [0.816, 0.816, 0.306],                # 1 / metre, per channel
+    # Focal length in PIXELS at the GT (half) resolution of each dataset.
+    "nyu_focal_px": 259.43,      # NYU-v2 official fx 518.8579 @640 wide -> /2
+    "kitti_focal_px": 360.77,    # KITTI P_rect_02 fx ~721.54 @1242 wide; crop keeps f -> /2
+    "make3d_focal_px": 246.60,   # Make3D ships NO intrinsics: assumed 50 deg HFOV @230 wide
+    # Water clarity per dataset. Multiplies beta, alpha AND gamma together — "clearer
+    # water" means fewer absorption *and* scattering events. Replaces the old
+    # *_haze_beta_scale (which only scaled beta, an inconsistency).
+    "nyu_water_clarity": 1.0,
+    "make3d_water_clarity": 0.125,
+    "kitti_water_clarity": 0.125,
+    # ---- legacy (0-255-axis) coefficients, used only when complex_depth_mode=normalized
     "gamma": [0.1, 0.1, 0.043],
     "alpha": [0.032, 0.032, 0.012],
     "turbu_p": [0.15, 1.5],
     "turbu_c": [34.0, 200.0, 201.0],
+    # v2 Eq.6: per-channel particle probability pr_c and per-channel blur sigma_c.
+    # (ricardo used one scalar each, and an off-by-1.5x density.)
+    "turbu_pr": [0.15, 0.15, 0.15],
+    "turbu_sigma": [1.5, 1.5, 1.5],
     "u": 0.99,
     "s": 2,
     "depth_add": 0,

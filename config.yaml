@@ -162,12 +162,39 @@ airlight_bg_depth: 150.0
 # + regenerate == exact original matrices (RNG sequence is floor-independent).
 nyu_airlight_brightness_min:    0.0    # keep 0.0 to match existing NYU GT (floor-0)
 make3d_airlight_brightness_min: 0.5    # applies on the NEXT Make3D params+GT regen
+# Complex forward-model version. "ricardo" = original code behind the paper's figures.
+# "v2" = corrected: untruncated Gaussian PSF (the fixed 21x21 window degenerated into a
+# box filter for sigma>~7px), energy-conserving (1-k) scatter weighting (the old code
+# used an unweighted source -> total radiance (1+k)J, a main cause of far-field wash-out),
+# and Eq.6 hygiene. Flip to "ricardo" to reproduce the previous GT exactly.
+complex_model: "v2"
+# Scattering depth axis. "metric" (P3): sigma_px = f_px * gamma_angular * z_m * clarity.
+# gamma_angular is ONE physical constant for all datasets; the pixel blur differs only
+# because the CAMERAS differ (focal length) and because a dataset may be simulated under
+# clearer water. "normalized" = the original per-image 0-255 axis (scene-dependent blur).
+complex_depth_mode: "metric"
+gamma_angular: [0.0098292, 0.0098292, 0.0042266]  # rad/m, shared. NYU-calibrated (sigma=25.5px @10m)
+alpha_metric:  [0.816, 0.816, 0.306]              # 1/m, straight-path attenuation
+# Focal length in PIXELS at each dataset's GT (half) resolution
+nyu_focal_px:    259.43   # NYU-v2 official fx 518.8579 @640 -> /2
+kitti_focal_px:  360.77   # KITTI P_rect_02 fx ~721.54 @1242; crop keeps f -> /2
+make3d_focal_px: 246.60   # Make3D ships NO intrinsics -> assumed 50 deg HFOV @230 wide
+# Water clarity per dataset: multiplies beta, alpha AND gamma together ("clearer water"
+# = fewer absorption AND scattering events). Replaces the old *_haze_beta_scale, which
+# scaled only beta. NYU = 1.0 (reference); Make3D/KITTI simulated under 8x clearer water
+# so their 0-80 m scenes don't extinguish (same reason as Option-B).
+nyu_water_clarity:    1.0
+make3d_water_clarity: 0.125
+kitti_water_clarity:  0.125
+# legacy 0-255-axis coefficients (used only when complex_depth_mode: "normalized")
 gamma:        [0.1, 0.1, 0.043]
 alpha:        [0.032, 0.032, 0.012]
-turbu_p:      [0.15, 1.5]
-turbu_c:      [34.0, 200.0, 201.0]
+turbu_p:      [0.15, 1.5]          # (ricardo only) [density, blur sigma]
+turbu_c:      [34.0, 200.0, 201.0] # sp_col: base particle colour per channel
+turbu_pr:     [0.15, 0.15, 0.15]   # (v2) Eq.6 pr_c: probability of a particle, per channel
+turbu_sigma:  [1.5, 1.5, 1.5]      # (v2) Eq.6 sigma_c: blur deviation, per channel
 u:            0.99
-s:            2
+s:            2                    # (ricardo only) stray SP multiplier; v2 follows Eq.6 exactly
 depth_add:    0
 depth_levels: 16
 kern_size:    10

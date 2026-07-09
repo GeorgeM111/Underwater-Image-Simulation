@@ -23,6 +23,7 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from PIL import Image
 from sklearn.utils import shuffle
 
+from config import CONFIG
 from utils.physics import compute_complex_noise  # noqa: F401  (kept for GT parity / reuse)
 from utils.transforms import getDefaultTrainTransform, getNoTransform
 
@@ -83,7 +84,8 @@ class depthDatasetMemory(Dataset):
         n = depth_half_0_1.shape[2]
         del depth_half_0_1
 
-        beta_mat = self.beta_mat_arr[idx]
+        # Deliver beta * water_clarity, matching the GT generator (NYU clarity = 1.0).
+        beta_mat = np.asarray(self.beta_mat_arr[idx], dtype=np.float32) * CONFIG.nyu_water_clarity
         beta_mat_mod = self.create_reorganize_dimension(beta_mat, m, n)
 
         a_mat = self.a_mat_arr[idx]

@@ -373,7 +373,7 @@ def generate_and_save_haze_image(stIndex, endIndex, indices=None):
         a_mat = a_mat_arr[idx]
         a_mat_mod = create_reorganize_dimension_custom(a_mat, m, n)
 
-        tx1 = np.exp(-np.multiply(beta_mat_mod, depth_half_0_1_3d))
+        tx1 = np.exp(-np.multiply(beta_mat_mod * CONFIG.nyu_water_clarity, depth_half_0_1_3d))
 
         # generate 3D unit matrix
         unit_mat = [1.0, 1.0, 1.0]
@@ -387,7 +387,9 @@ def generate_and_save_haze_image(stIndex, endIndex, indices=None):
         haze_image = np.add((np.multiply(image_half_numpy, tx1)), second_term)
 
         complex_noisy_img = compute_complex_noise(image_half_numpy, depth_half_0_1_3d[:, :, 0]/10, beta_mat,
-                                                  a_mat)
+                                                  a_mat, max_depth_m=CONFIG.nyu_max_depth_m,
+                                                  focal_px=CONFIG.nyu_focal_px,
+                                                  clarity=CONFIG.nyu_water_clarity)
         complex_noisy_img = complex_noisy_img/255
 
         del a_mat
@@ -463,7 +465,7 @@ def generate_and_save_haze_image_test(stIndex, endIndex):
         a_mat = a_mat_arr[idx]
         a_mat_mod = create_reorganize_dimension_custom(a_mat, m, n)
 
-        tx1 = np.exp(-np.multiply(beta_mat_mod, depth_half_0_1_3d))
+        tx1 = np.exp(-np.multiply(beta_mat_mod * CONFIG.nyu_water_clarity, depth_half_0_1_3d))
 
         # generate 3D unit matrix
         unit_mat = [1.0, 1.0, 1.0]
@@ -477,7 +479,9 @@ def generate_and_save_haze_image_test(stIndex, endIndex):
         haze_image = np.add((np.multiply(image_half_numpy, tx1)), second_term)
 
         complex_noisy_img = compute_complex_noise(image_half_numpy, depth_half_0_1_3d[:, :, 0]/10, beta_mat,
-                                                  a_mat)
+                                                  a_mat, max_depth_m=CONFIG.nyu_max_depth_m,
+                                                  focal_px=CONFIG.nyu_focal_px,
+                                                  clarity=CONFIG.nyu_water_clarity)
         complex_noisy_img = complex_noisy_img/255
 
         del a_mat
@@ -559,9 +563,9 @@ def generate_and_save_ricardo_image_make_3D(stIndex, endIndex):
         a_mat = a_mat_arr[idx]
         a_mat_mod = create_reorganize_dimension_custom(a_mat, m, n)
 
-        # Option B: Make3D as CLEARER water — scale beta for the transmission only,
-        # keeping TRUE metric depth, so 0-80 m scenes don't collapse to flat airlight.
-        tx1 = np.exp(-np.multiply(beta_mat_mod * CONFIG.make3d_haze_beta_scale, depth_half_m))
+        # Option B / water clarity: Make3D as CLEARER water — scale beta for the
+        # transmission, keeping TRUE metric depth, so 0-80 m scenes don't go flat.
+        tx1 = np.exp(-np.multiply(beta_mat_mod * CONFIG.make3d_water_clarity, depth_half_m))
 
         # generate 3D unit matrix
         unit_mat = [1.0, 1.0, 1.0]
@@ -571,7 +575,9 @@ def generate_and_save_ricardo_image_make_3D(stIndex, endIndex):
         haze_image = np.add((np.multiply(image_half, tx1)), second_term)
 
         complex_noisy_img = compute_complex_noise(image_half, depth_norm01[:, :, 0], beta_mat,
-                                                  a_mat)
+                                                  a_mat, max_depth_m=CONFIG.make3d_max_depth_m,
+                                                  focal_px=CONFIG.make3d_focal_px,
+                                                  clarity=CONFIG.make3d_water_clarity)
 
         complex_noisy_img = complex_noisy_img/255
 
@@ -645,9 +651,9 @@ def generate_and_save_ricardo_image_make_3D_Test(stIndex, endIndex):
         a_mat = a_mat_arr[idx]
         a_mat_mod = create_reorganize_dimension_custom(a_mat, m, n)
 
-        # Option B: Make3D as CLEARER water — scale beta for the transmission only,
-        # keeping TRUE metric depth, so 0-80 m scenes don't collapse to flat airlight.
-        tx1 = np.exp(-np.multiply(beta_mat_mod * CONFIG.make3d_haze_beta_scale, depth_half_m))
+        # Option B / water clarity: Make3D as CLEARER water — scale beta for the
+        # transmission, keeping TRUE metric depth, so 0-80 m scenes don't go flat.
+        tx1 = np.exp(-np.multiply(beta_mat_mod * CONFIG.make3d_water_clarity, depth_half_m))
 
         # generate 3D unit matrix
         unit_mat = [1.0, 1.0, 1.0]
@@ -657,7 +663,9 @@ def generate_and_save_ricardo_image_make_3D_Test(stIndex, endIndex):
         haze_image = np.add((np.multiply(image_half, tx1)), second_term)
 
         complex_noisy_img = compute_complex_noise(image_half, depth_norm01[:, :, 0], beta_mat,
-                                                  a_mat)
+                                                  a_mat, max_depth_m=CONFIG.make3d_max_depth_m,
+                                                  focal_px=CONFIG.make3d_focal_px,
+                                                  clarity=CONFIG.make3d_water_clarity)
 
         complex_noisy_img = complex_noisy_img/255
 
@@ -743,12 +751,15 @@ def _kitti_generate_gt(split, save_dir, beta_name, a_name, stIndex, endIndex, in
         a_mat_mod = create_reorganize_dimension_custom(a_mat, m, n)
         unit_mat = create_reorganize_dimension_custom([1.0, 1.0, 1.0], m, n)
 
-        # Option B: scale beta for the classical transmission only (true metric depth).
-        tx1 = np.exp(-np.multiply(beta_mat_mod * CONFIG.kitti_haze_beta_scale, depth_half_m_3d))
+        # Water clarity: scale beta for the classical transmission (true metric depth).
+        tx1 = np.exp(-np.multiply(beta_mat_mod * CONFIG.kitti_water_clarity, depth_half_m_3d))
         second_term = np.multiply(a_mat_mod, np.subtract(unit_mat, tx1))
         haze_image = np.add(np.multiply(image_half, tx1), second_term)
 
-        complex_noisy_img = compute_complex_noise(image_half, depth_norm01, beta_mat, a_mat) / 255
+        complex_noisy_img = compute_complex_noise(
+            image_half, depth_norm01, beta_mat, a_mat,
+            max_depth_m=CONFIG.kitti_max_depth_m, focal_px=CONFIG.kitti_focal_px,
+            clarity=CONFIG.kitti_water_clarity) / 255
 
         save(_os.path.join(save_dir, str(idx) + "haze_image.npy"), haze_image)
         save(_os.path.join(save_dir, str(idx) + "complex_haze_image.npy"), complex_noisy_img)
@@ -915,7 +926,7 @@ class depthDatasetMemory(Dataset):
         a_mat = self.a_mat_arr[idx]
         a_mat_mod = self.create_reorganize_dimension(a_mat, m, n)
 
-        tx1 = np.exp(-np.multiply(beta_mat_mod, depth_half_0_1_3d))
+        tx1 = np.exp(-np.multiply(beta_mat_mod * CONFIG.nyu_water_clarity, depth_half_0_1_3d))
 
         # generate 3D unit matrix
         unit_mat = [1.0, 1.0, 1.0]
@@ -933,7 +944,9 @@ class depthDatasetMemory(Dataset):
         # self.another_simple_image_save(depth_half_0_1_3d, '/homes/t20monda/Water_Correction_Test_1/DenseDepth/depth_imag_NN.png')
 
         complex_noisy_img = compute_complex_noise(image_half_numpy, depth_half_0_1_3d[:, :, 0]/10, beta_mat,
-                                                  a_mat)
+                                                  a_mat, max_depth_m=CONFIG.nyu_max_depth_m,
+                                                  focal_px=CONFIG.nyu_focal_px,
+                                                  clarity=CONFIG.nyu_water_clarity)
         complex_noisy_img = complex_noisy_img/255
         del a_mat
         del beta_mat

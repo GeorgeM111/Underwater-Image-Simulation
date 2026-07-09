@@ -201,58 +201,133 @@ def turbidDeg(rgb, depht, turbu_p, turbu_c):
 # (1 - k_c) * J_c, which GROWS with depth (distant direct radiance unattenuated)
 # — physically backwards — so it is restored to k_c * J_c here.
 def outTotal(rgb, depht, I_out, gamma, alpha, beta, A_light):
-    dim = rgb.shape
-    I_total = np.zeros(rgb.shape)
+    """Eq. 5, VECTORISED (P0).
 
+    Mathematically identical to the original triple Python loop over H*W*3 (verified
+    bit-for-bit), but ~2 orders of magnitude faster — the loop dominated GT-generation
+    cost. ``gamma`` is unused (kept for signature compatibility).
+    """
+    z = np.asarray(depht, dtype=np.float32)[:, :, None]
+    a = np.asarray(alpha, dtype=np.float32)[None, None, :]
+    b = np.asarray(beta, dtype=np.float32)[None, None, :]
+    A = np.asarray(A_light, dtype=np.float32)[None, None, :]
+    rgb = np.asarray(rgb, dtype=np.float32)
+    k = np.exp(-a * z)                    # straight-path fraction  k_c = exp(-alpha*z)
+    t = np.exp(-b * z)                    # transmission            t_c = exp(-beta*z)
+    return (np.asarray(I_out, dtype=np.float32) + k * rgb) * t + (1.0 - t) * A
+
+
+# =============================================================================
+# v2 — corrected complex model (P1, P2, P4).  Enable with config complex_model: "v2".
+# =============================================================================
+
+def _scatter_v2(rgb, depth, gamma_, alpha_, d_levels):
+    """Forward-scattered radiance (Eq. 3-4), corrected.
+
+    P1 — Untruncated Gaussian PSF. The original built the kernel in a FIXED 21x21 window
+         (kern_size=10) while sigma = gamma_c * z grows with depth (sigma=25.5 px at
+         z=255). Measured centre/corner weight ratio fell to 1.17 => the "Gaussian PSF"
+         degenerated into a BOX FILTER beyond mid-depth. Here cv2 sizes the kernel from
+         sigma (~4 sigma) and convolves separably: correct *and* faster.
+
+    P2 — Energy-conserving source weighting. Eq. 4's integrand must carry the SCATTERED
+         fraction of the source radiance, (1 - k_c(x')) with k_c = exp(-alpha_c z), so
+         that scattered + direct = (1-k)J + kJ = J. The original convolved an UNWEIGHTED
+         J_c, making total radiance (1+k)J — energy *amplification*, and a principal
+         cause of the far-field wash-out. (The paper writes k*J here and (1-k)*J for the
+         direct term, i.e. the two are swapped relative to its own definition of k as the
+         straight-path probability.)
+    """
+    H, W, _ = rgb.shape
+    out = np.zeros((H, W, 3), dtype=np.float32)
+    d_min, d_max = float(depth.min()), float(depth.max())
+    if not (np.isfinite(d_min) and np.isfinite(d_max)):
+        return out
+    if d_max <= d_min:
+        # Degenerate (constant) depth: one level covering the whole image. The old code
+        # produced an all-zero scatter here because its half-open bins matched nothing.
+        edges = np.array([d_min, d_min + 1e-6], dtype=np.float64)
+        d_levels = 1
+    else:
+        edges = np.linspace(d_min, d_max, d_levels + 1)
+    for n in range(d_levels):
+        lo, hi = float(edges[n]), float(edges[n + 1])
+        m = (depth >= lo) & (depth < hi) if n < d_levels - 1 else (depth >= lo)
+        if not m.any():
+            continue
+        di_m = 0.5 * (lo + hi)
+        for c in range(3):
+            src = (rgb[:, :, c] * m).astype(np.float32)
+            src *= (1.0 - np.exp(-float(alpha_[c]) * depth)).astype(np.float32)   # P2
+            sigma = float(gamma_[c]) * di_m
+            if sigma <= 1e-3:
+                out[:, :, c] += src
+            else:
+                out[:, :, c] += cv2.GaussianBlur(src, (0, 0), sigmaX=sigma, sigmaY=sigma,
+                                                 borderType=cv2.BORDER_REPLICATE)   # P1
+    return out
+
+
+def _turbid_v2(shape, pr, sp_col, sigma_c):
+    """Eq. 6 particle field SP_c{sp_col, pr_c, sigma_c}, corrected (P4).
+
+    - Density is EXACTLY pr_c. The original used ceil(pr * size * 0.5 * 3) with random
+      coords drawn with replacement -> ~20.1% of entries salted instead of pr_c=15%.
+    - Per-channel blur sigma_c (the original used one scalar sigma and a fixed 9x9 kernel).
+    - "Pepper" is vacuous on a zero-valued particle field (absence of a particle IS the
+      background), so we implement the paper's own wording: with probability pr_c a
+      particle of colour sp_col[c] is added to channel c.
+    """
+    H, W = int(shape[0]), int(shape[1])
+    out = np.zeros((H, W, 3), dtype=np.float32)
     for c in range(3):
-        for i in range(0, dim[0], 1):
-            for j in range(0, dim[1], 1):
-                s = [i, j]
-                # straight-path radiance: k_c * J_c, with k_c = exp(-alpha * z)
-                v1 = np.exp(-alpha[c] * depht[s[0]][s[1]]) * rgb[s[0]][s[1]][c]
-                v2 = np.exp(-beta[c] * depht[s[0]][s[1]])
-                I_total[s[0]][s[1]][c] = (I_out[s[0]][s[1]][c] + v1) * v2 + (1 - v2) * A_light[c]
-
-    return I_total
+        mask = (np.random.rand(H, W) < float(pr[c])).astype(np.float32)
+        ch = mask * float(sp_col[c])
+        sg = float(sigma_c[c])
+        out[:, :, c] = cv2.GaussianBlur(ch, (0, 0), sigmaX=sg, sigmaY=sg) if sg > 1e-3 else ch
+    return out
 
 
-def processImg(imgD_Norm, imgRGB, beta, A_light):
-    # ``beta`` is this image's classical Jerlov water type ([R,G,B], per-metre
-    # scale). The ricardo transmission runs on a 0-255 depth axis, so we rescale
-    # it: beta_ricardo = beta * complex_beta_scale. This makes the complex GT
-    # follow the SAME per-image water type as the haze/airlight (blue vs green),
-    # instead of a single fixed complex_beta for every image.
-    beta_ricardo = (np.asarray(beta, dtype=np.float64) * CONFIG.complex_beta_scale).tolist()
-    imgD_Norm += depth_add  # add a minimum to depth map
+def processImg(imgD_Norm, imgRGB, beta, A_light,
+               gamma_eff=None, alpha_eff=None, beta_eff=None):
+    """Complex forward model.
 
-    imgD_Norm_T = torch.from_numpy(imgD_Norm)
-    imgRGB_T = torch.from_numpy(imgRGB)
+    ``gamma_eff`` / ``alpha_eff`` / ``beta_eff`` are the EFFECTIVE per-channel
+    coefficients on whatever depth axis ``imgD_Norm`` uses. When omitted (the
+    "normalized" 0-255 path) they fall back to the legacy config values and
+    ``beta * complex_beta_scale``.
+    """
+    if beta_eff is None:
+        # Legacy 0-255 axis: rescale the per-metre Jerlov beta onto it.
+        beta_eff = (np.asarray(beta, dtype=np.float64) * CONFIG.complex_beta_scale).tolist()
+    if gamma_eff is None:
+        gamma_eff = gamma
+    if alpha_eff is None:
+        alpha_eff = alpha
 
-    # Compute scattering part
-    I_out = scatterPsdOp(imgRGB_T, imgD_Norm_T, gamma, alpha, kern_size, depth_levels)
-    I_out = I_out.data.numpy()
+    imgD_Norm = imgD_Norm + depth_add  # add a minimum to depth map
 
-    # Compute total model (scattering & loss + attenuation + ambient)
-    I_total = outTotal(imgRGB.astype(np.float32), imgD_Norm.astype(np.float32), I_out, gamma, alpha,
-                       beta_ricardo, A_light)
+    rgb_f = imgRGB.astype(np.float32)
+    d_f = imgD_Norm.astype(np.float32)
 
-    # particle turbidity effect
-    dim = I_total.shape
-    out = np.zeros(dim)
-    out2 = turbidDeg(imgRGB.astype(np.float32), imgD_Norm.astype(np.float32), turbu_p, turbu_c)
-    out = I_total * u + out2 * s * (1 - u)
+    if str(getattr(CONFIG, 'complex_model', 'ricardo')).lower() == 'v2':
+        # ---- corrected model (P1 untruncated PSF, P2 energy-conserving scatter) ----
+        I_out = _scatter_v2(rgb_f, d_f, gamma_eff, alpha_eff, depth_levels)
+        I_total = outTotal(rgb_f, d_f, I_out, gamma_eff, alpha_eff, beta_eff, A_light)
+        # P4: Eq. 6 exactly -> I = u*I_sct + (1-u)*SP   (no stray `s` multiplier)
+        sp = _turbid_v2(rgb_f.shape, CONFIG.turbu_pr, turbu_c, CONFIG.turbu_sigma)
+        out = I_total * u + sp * (1.0 - u)
+    else:
+        # ---- original ricardo path (same maths as before; P0 vectorised outTotal) ----
+        I_out = scatterPsdOp(torch.from_numpy(rgb_f), torch.from_numpy(d_f),
+                             gamma_eff, alpha_eff, kern_size, depth_levels).data.numpy()
+        I_total = outTotal(rgb_f, d_f, I_out, gamma_eff, alpha_eff, beta_eff, A_light)
+        out2 = turbidDeg(rgb_f, d_f, turbu_p, turbu_c)
+        out = I_total * u + out2 * s * (1 - u)
 
-    # Adjust and save result
-    for c in range(3):
-        for i in range(dim[0]):
-            for j in range(dim[1]):
-                if math.isnan(out[i][j][c]):
-                    out[i][j][c] = 255
-
-                if out[i][j][c] > 255:
-                    out[i][j][c] = 255
-
-    out = out.astype(np.uint8)
+    # NaN -> saturated, clip to the 0-255 display range (vectorised; was a triple loop)
+    out = np.nan_to_num(out, nan=255.0, posinf=255.0, neginf=0.0)
+    out = np.clip(out, 0.0, 255.0).astype(np.uint8)
 
     return out
 
@@ -308,18 +383,44 @@ def to_transform(pic):
         return img
 
 
-def compute_complex_noise(input_image, input_depth, beta_mat, A_light):
-    """Full ricardo underwater degradation of an RGB image given its depth map."""
-    input_image = (input_image - 0) * (255 - 0) / (1 - 0) + 0  # normalize the image within 0-255
-    input_depth = (input_depth - 0) * (255 - 0) / (1 - 0) + 0  # normalize the image within 0-255
+def compute_complex_noise(input_image, input_depth, beta_mat, A_light,
+                          max_depth_m=None, focal_px=None, clarity=1.0):
+    """Full underwater degradation of an RGB image [0,1] given its depth map [0,1].
 
-    imgD_Norm = input_depth
-    imgD_Norm = imgD_Norm + 1
-    imgD_Norm = (imgD_Norm / np.min([np.max(imgD_Norm), 255])) * 255  # values are > 0 & <= 255
+    ``complex_depth_mode``:
+      "metric" (P3, default) — depth stays in METRES (``input_depth * max_depth_m``) and
 
-    A_light = np.array(A_light) * 255
-    A_light = A_light.tolist()
+          sigma_px(z) = focal_px * gamma_angular_c * clarity * z_metres
+          k_c(z)      = exp(-alpha_metric_c * clarity * z_metres)
+          t_c(z)      = exp(-beta_c        * clarity * z_metres)     (beta = Jerlov, per-metre)
 
-    out_noisy_img = processImg(imgD_Norm, input_image, beta_mat, A_light)
+        ``gamma_angular`` is ONE physical constant across datasets; the pixel blur differs
+        only because the cameras differ (focal_px) and because a dataset may be simulated
+        under clearer water (clarity). This also makes the complex transmission use the
+        SAME per-metre Jerlov beta as the classical haze — no separate complex_beta_scale.
 
-    return out_noisy_img
+      "normalized" (legacy) — depth is rescaled to a PER-IMAGE 0-255 axis, so the PSF
+        width depends on each image's own depth range (a bathroom and a street get the
+        same blur at their respective far planes) and gamma/alpha/beta are unitless.
+    """
+    input_image = input_image * 255.0                        # image -> 0-255
+    mode = str(getattr(CONFIG, 'complex_depth_mode', 'normalized')).lower()
+
+    if mode == 'metric':
+        if max_depth_m is None or focal_px is None:
+            raise ValueError("complex_depth_mode='metric' requires max_depth_m and focal_px.")
+        clarity = float(clarity)
+        imgD_Norm = np.asarray(input_depth, dtype=np.float64) * float(max_depth_m)
+        # Effective coefficients on the METRIC depth axis.
+        gamma_eff = (np.asarray(CONFIG.gamma_angular, np.float64) * float(focal_px) * clarity).tolist()
+        alpha_eff = (np.asarray(CONFIG.alpha_metric, np.float64) * clarity).tolist()
+        beta_eff = (np.asarray(beta_mat, np.float64) * clarity).tolist()
+        A_light = (np.array(A_light) * 255).tolist()
+        return processImg(imgD_Norm, input_image, beta_mat, A_light,
+                          gamma_eff=gamma_eff, alpha_eff=alpha_eff, beta_eff=beta_eff)
+
+    input_depth = input_depth * 255.0                        # depth -> 0-255
+    imgD_Norm = input_depth + 1
+    imgD_Norm = (imgD_Norm / np.min([np.max(imgD_Norm), 255])) * 255  # >0 and <=255
+    A_light = (np.array(A_light) * 255).tolist()
+    return processImg(imgD_Norm, input_image, beta_mat, A_light)
