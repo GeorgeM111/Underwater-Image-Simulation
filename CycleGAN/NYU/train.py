@@ -25,13 +25,16 @@ import torchvision.utils as vutils
 from tensorboardX import SummaryWriter
 
 from gan_models import *
-from gan_utils import ReplayBuffer, LambdaLR, weights_init_normal
+from gan_utils import ReplayBuffer, LambdaLR, weights_init_normal, to_gan_range, from_gan_range
 from utils.helpers import AverageMeter
+from utils.tb import log_images
 from config import load_config
 from data.nyu import get_train_loader, get_test_loader
 import numpy as np
 import warnings
-warnings.filterwarnings("error")
+# Don't promote warnings to errors: benign PyTorch deprecation/legacy-tensor warnings
+# would otherwise crash training (matches the CycleGAN Make3D script).
+warnings.filterwarnings("ignore")
 
 
 def main():
@@ -47,7 +50,7 @@ def main():
 
     cfg = load_config(opt.config)
     n_epochs = cfg.epochs
-    lr = cfg.learning_rate
+    lr = opt.lr if getattr(opt, 'lr', None) is not None else cfg.gan_learning_rate
     batchSize = cfg.batch_size_nyu
 
     is_use_cuda = torch.cuda.is_available()
@@ -180,6 +183,9 @@ def main():
 
             real_A = real_A.to(device, dtype=torch.float)
             real_B = real_B.to(device, dtype=torch.float)
+            # CycleGAN trains in [-1,1] (Tanh generators); normalise the [0,1] loader data.
+            real_A = to_gan_range(real_A)
+            real_B = to_gan_range(real_B)
             # --------------------------------- Generators A2B and B2A -----------------------------------
             optimizer_G.zero_grad()
 
@@ -284,33 +290,26 @@ def main():
         writer_1.add_scalar('loss_G_cycle', (loss_cycle_ABA + loss_cycle_BAB), epoch)
         writer_1.add_scalar('loss_D', (loss_D_A + loss_D_B), epoch)
 
-        if epoch == (n_epochs-1): # if we are running the last epochs
-            # Log to tensorboard
-            writer_1.add_image('real_A', vutils.make_grid(real_A.data, nrow=6, normalize=False),
-                        epoch)
-            writer_1.add_image('real_B', vutils.make_grid(real_B.data, nrow=6, normalize=False),
-                        epoch)
-            writer_1.add_image('fake_A', vutils.make_grid(fake_A.data, nrow=6, normalize=False),
-                        epoch)
-            writer_1.add_image('fake_B', vutils.make_grid(fake_B.data, nrow=6, normalize=False),
-                        epoch)
+        # Log image grids EVERY epoch (was last-epoch-only, and referenced an
+        # unimported `vutils`). log_images handles the grid + normalisation.
+        log_images(writer_1, epoch, {'real_A': from_gan_range(real_A), 'fake_B': from_gan_range(fake_B),
+                                     'real_B': from_gan_range(real_B), 'fake_A': from_gan_range(fake_A)})
 
         # Update learning rates
         lr_scheduler_G.step()
         lr_scheduler_D_A.step()
         lr_scheduler_D_B.step()
 
-        # Best-only checkpoint: all four sub-networks bundled into ONE file,
-        # selected by the generator loss (the generators are what test uses).
-        if epoch_loss_G < best_loss:
-            best_loss = epoch_loss_G
-            os.makedirs(ckpt_dir, exist_ok=True)
-            torch.save({'state_dict_G_A2B': netG_A2B.state_dict(),
-                        'state_dict_G_B2A': netG_B2A.state_dict(),
-                        'state_dict_D_A': netD_A.state_dict(),
-                        'state_dict_D_B': netD_B.state_dict(),
-                        'cur_epoch': epoch, 'best_loss': best_loss},
-                       ckpt_path)
+        # Save the LATEST checkpoint every epoch (overwrite). A GAN's loss_G is not a
+        # quality signal — it oscillates as the G/D balance shifts — so "best-by-loss"
+        # just froze the FIRST epoch. Keep the most recent weights instead.
+        os.makedirs(ckpt_dir, exist_ok=True)
+        torch.save({'state_dict_G_A2B': netG_A2B.state_dict(),
+                    'state_dict_G_B2A': netG_B2A.state_dict(),
+                    'state_dict_D_A': netD_A.state_dict(),
+                    'state_dict_D_B': netD_B.state_dict(),
+                    'cur_epoch': epoch, 'epoch_loss_G': epoch_loss_G},
+                   ckpt_path)
 
 if __name__ == '__main__':
     main()

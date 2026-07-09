@@ -45,7 +45,7 @@ from tqdm import tqdm
 from skimage.measure import shannon_entropy
 
 from config import load_config
-from data.kitti import list_frames, load_calib, project_velodyne_to_depth
+from data.kitti import list_completed_frames, read_completed_depth
 
 
 def _minmax(a):
@@ -77,23 +77,17 @@ def main():
     w_grad = args.w_gradient if args.w_gradient is not None else cfg.kitti_subset_w_gradient
     w_depth = args.w_depth if args.w_depth is not None else cfg.kitti_subset_w_depth
     jobs = args.jobs if args.jobs is not None else cfg.n_parallel_jobs
-    out_dir = args.output_dir if args.output_dir is not None else os.path.dirname(cfg.beta_mat_nyu_train)
+    out_dir = args.output_dir if args.output_dir is not None else os.path.dirname(cfg.beta_mat_kitti_train)
     max_depth = cfg.kitti_max_depth_m
 
     print("KITTI subset  |  size=%d  weights: ent=%.3f grad=%.3f depth=%.3f  resize=%s  jobs=%d"
           % (subset_size, w_ent, w_grad, w_depth, args.resize, jobs))
 
-    frames = list_frames(cfg.kitti_raw_dir)
+    frames = list_completed_frames('train')
     if args.limit:
         frames = frames[:args.limit]
     n = len(frames)
-    print("Total KITTI frames (image_02 with matching velodyne): %d" % n)
-
-    # Pre-load calibration once per date (shared read-only across threads).
-    calib_cache = {}
-    for f in frames:
-        if f['date_dir'] not in calib_cache:
-            calib_cache[f['date_dir']] = load_calib(f['date_dir'])
+    print("Total KITTI train frames (image_02 with completed depth): %d" % n)
 
     ent_raw = np.zeros(n, dtype=np.float64)
     grad_raw = np.zeros(n, dtype=np.float64)
@@ -111,9 +105,10 @@ def main():
             gx = cv2.Sobel(gf, cv2.CV_32F, 1, 0, ksize=3)
             gy = cv2.Sobel(gf, cv2.CV_32F, 0, 1, ksize=3)
             grad = float(np.sqrt(gx * gx + gy * gy).mean())
-            depth = project_velodyne_to_depth(f['velo'], calib_cache[f['date_dir']], W, H)
+            # depth range over the VALID (measured) completed-depth pixels — do NOT
+            # densify here (scoring should reflect the real measured spread).
+            depth = read_completed_depth(f['depth'], max_depth, densify=False)
             valid = depth[depth > 0]
-            valid = valid[valid <= max_depth]
             drange = float(valid.max() - valid.min()) if valid.size else 0.0
             return k, ent, grad, drange
         except Exception as exc:

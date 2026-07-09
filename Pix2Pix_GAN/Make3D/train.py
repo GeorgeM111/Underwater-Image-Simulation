@@ -25,9 +25,10 @@ from torch.autograd import Variable
 from tensorboardX import SummaryWriter
 
 from gan_models import *
-from gan_utils import ReplayBuffer, LambdaLR, Logger, weights_init_normal
+from gan_utils import ReplayBuffer, LambdaLR, Logger, weights_init_normal, to_gan_range, from_gan_range
 from utils.helpers import AverageMeter
 from utils.metrics import add_results_1
+from utils.tb import log_images
 from config import load_config
 from data.make3d import get_train_loader, get_val_loader
 
@@ -47,7 +48,7 @@ def main():
 
     cfg = load_config(opt.config)
     n_epochs = opt.n_epochs if opt.n_epochs is not None else cfg.epochs
-    lr = opt.lr if opt.lr is not None else cfg.learning_rate
+    lr = opt.lr if opt.lr is not None else cfg.gan_learning_rate
     if opt.batchSize is not None:
         cfg.batch_size_make3d = opt.batchSize
 
@@ -63,8 +64,10 @@ def main():
     generator.apply(weights_init_normal)
     discriminator.apply(weights_init_normal)
 
-    optimizer_G = torch.optim.Adam(generator.parameters(), lr=lr)
-    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=lr)
+    # GAN-standard Adam betas (Isola et al. / pix2pix): beta1=0.5. The torch default
+    # beta1=0.9 destabilises adversarial training (and CycleGAN here already uses 0.5).
+    optimizer_G = torch.optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
+    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
     lr_scheduler_G = torch.optim.lr_scheduler.LambdaLR(
         optimizer_G, lr_lambda=LambdaLR(n_epochs, opt.epoch, opt.decay_epoch).step)
     lr_scheduler_D = torch.optim.lr_scheduler.LambdaLR(
@@ -105,6 +108,9 @@ def main():
         for sample_batched in train_loader:
             input_A = Variable(sample_batched['image_half'].to(device))          # clean (domain A)
             input_B = Variable(sample_batched['complex_noise_img'].to(device))   # degraded (domain B)
+            # pix2pix trains in [-1,1] (Tanh generator); normalise the [0,1] loader data.
+            input_A = to_gan_range(input_A)
+            input_B = to_gan_range(input_B)
 
             valid = Variable(Tensor(np.ones((input_A.size(0), *patch))), requires_grad=False)
             fake = Variable(Tensor(np.zeros((input_A.size(0), *patch))), requires_grad=False)
@@ -139,12 +145,12 @@ def main():
         val_meter = AverageMeter()
         with torch.no_grad():
             for sample_batched in val_loader:
-                input_A = sample_batched['image_half'].to(device)
-                input_B = sample_batched['complex_noise_img'].to(device)
-                fake_B = generator(input_A)
-                fake_B = F.interpolate(fake_B, size=(173, 230), mode='bicubic', align_corners=False)
-                # Select the checkpoint by the actual eval metric (abs_rel), not the
-                # GAN loss, so "best" tracks accuracy rather than adversarial balance.
+                input_A = sample_batched['image_half'].to(device)          # [0,1] for metric/logging
+                input_B = sample_batched['complex_noise_img'].to(device)   # [0,1] GT
+                # Generator runs in [-1,1]; denormalise its output back to [0,1] for the
+                # (depth-ratio) metric, which needs positive [0,1] values.
+                fake_B = generator(to_gan_range(input_A))
+                fake_B = from_gan_range(F.interpolate(fake_B, size=(173, 230), mode='bicubic', align_corners=False))
                 abs_rel = add_results_1(input_B, fake_B, border_crop_size=16)[0]
                 if torch.isfinite(abs_rel):
                     val_meter.update(abs_rel.item(), input_A.size(0))
@@ -153,23 +159,20 @@ def main():
         writer.add_scalar('loss_G', losses_G.avg, epoch)
         writer.add_scalar('loss_D', losses_D.avg, epoch)
         writer.add_scalar('loss_val_G', val_avg, epoch)
+        # last val batch (input_A/fake_B/input_B are the val tensors after the loop above)
+        log_images(writer, epoch, {'input_A': input_A, 'fake_B': fake_B, 'gt_B': input_B})
         writer.flush()
         print('[Pix2Pix Make3D] epoch %d/%d  train_G=%.4f  loss_D=%.4f  val_rel=%.4f' % (
             epoch, n_epochs - 1, losses_G.avg, losses_D.avg, val_avg))
 
-        if val_avg < best_loss:
-            best_loss = val_avg
-            epochs_no_improve = 0
-            os.makedirs(ckpt_dir, exist_ok=True)
-            torch.save({'state_dict_G': generator.state_dict(),
-                        'state_dict_D': discriminator.state_dict(),
-                        'cur_epoch': epoch, 'best_loss': best_loss},
-                       ckpt_path)
-        else:
-            epochs_no_improve += 1
-            if epochs_no_improve >= patience:
-                print('[Pix2Pix Make3D] early stopping at epoch %d (no val improvement for %d epochs)' % (epoch, patience))
-                break
+        # Save the LATEST checkpoint every epoch (overwrite); no early stopping. GAN
+        # pixel metrics don't improve monotonically, so "best-by-val" + early stop
+        # froze an early epoch. val_avg is still logged above for monitoring.
+        os.makedirs(ckpt_dir, exist_ok=True)
+        torch.save({'state_dict_G': generator.state_dict(),
+                    'state_dict_D': discriminator.state_dict(),
+                    'cur_epoch': epoch, 'val_rel': val_avg},
+                   ckpt_path)
 
     writer.close()
 

@@ -26,9 +26,10 @@ import torchvision.utils as vutils
 from tensorboardX import SummaryWriter
 
 from gan_models import *
-from gan_utils import ReplayBuffer, LambdaLR, weights_init_normal
+from gan_utils import ReplayBuffer, LambdaLR, weights_init_normal, to_gan_range, from_gan_range
 from utils.helpers import AverageMeter
 from utils.metrics import add_results_1
+from utils.tb import log_images
 from config import load_config
 from data.make3d import get_train_loader, get_val_loader
 import numpy as np
@@ -51,7 +52,7 @@ def main():
 
     cfg = load_config(opt.config)
     n_epochs = cfg.epochs
-    lr = cfg.learning_rate
+    lr = opt.lr if getattr(opt, 'lr', None) is not None else cfg.gan_learning_rate
     batchSize = cfg.batch_size_make3d
 
     is_use_cuda = torch.cuda.is_available()
@@ -186,6 +187,9 @@ def main():
 
             real_A = real_A.to(device, dtype=torch.float)
             real_B = real_B.to(device, dtype=torch.float)
+            # CycleGAN trains in [-1,1] (Tanh generators); normalise the [0,1] loader data.
+            real_A = to_gan_range(real_A)
+            real_B = to_gan_range(real_B)
             # --------------------------------- Generators A2B and B2A -----------------------------------
             optimizer_G.zero_grad()
 
@@ -295,13 +299,11 @@ def main():
         val_meter = AverageMeter()
         with torch.no_grad():
             for sample_batched in val_loader:
-                real_A = sample_batched['image_half'].to(device)
-                real_B = sample_batched['complex_noise_img'].to(device)
-                fake_B = netG_A2B(real_A)
-                fake_B = F.interpolate(fake_B, size=(173, 230), mode='bicubic', align_corners=False)
-                # Select the checkpoint by the actual eval metric (abs_rel), NOT L1:
-                # a CycleGAN generator is trained adversarially / by cycle-consistency,
-                # not to minimise pixel L1 to the target, so L1 rises as it improves.
+                real_A = sample_batched['image_half'].to(device)          # [0,1] for metric/logging
+                real_B = sample_batched['complex_noise_img'].to(device)   # [0,1] GT
+                # Generator runs in [-1,1]; denormalise its output to [0,1] for the metric.
+                fake_B = netG_A2B(to_gan_range(real_A))
+                fake_B = from_gan_range(F.interpolate(fake_B, size=(173, 230), mode='bicubic', align_corners=False))
                 abs_rel = add_results_1(real_B, fake_B, border_crop_size=16)[0]
                 if torch.isfinite(abs_rel):
                     val_meter.update(abs_rel.item(), real_A.size(0))
@@ -310,25 +312,25 @@ def main():
         # Log progress; one line per epoch (matches the Technique_* print style).
         print('[CycleGAN Make3D] epoch %d/%d  loss_G=%.4f  loss_D_A=%.4f  loss_D_B=%.4f  val_rel=%.4f' % (
             epoch, n_epochs - 1, epoch_loss_G, epoch_loss_D_A, epoch_loss_D_B, val_avg))
+        writer_1.add_scalar('loss_G', epoch_loss_G, epoch)
+        writer_1.add_scalar('loss_D_A', epoch_loss_D_A, epoch)
+        writer_1.add_scalar('loss_D_B', epoch_loss_D_B, epoch)
         writer_1.add_scalar('loss_val', val_avg, epoch)
+        # last val batch (real_A/fake_B/real_B are the val tensors after the loop above)
+        log_images(writer_1, epoch, {'real_A': real_A, 'fake_B': fake_B, 'real_B': real_B})
 
-        # Best-only checkpoint: all four sub-networks bundled into ONE file,
-        # selected by the validation A->B loss, with early stopping.
-        if val_avg < best_loss:
-            best_loss = val_avg
-            epochs_no_improve = 0
-            os.makedirs(ckpt_dir, exist_ok=True)
-            torch.save({'state_dict_G_A2B': netG_A2B.state_dict(),
-                        'state_dict_G_B2A': netG_B2A.state_dict(),
-                        'state_dict_D_A': netD_A.state_dict(),
-                        'state_dict_D_B': netD_B.state_dict(),
-                        'cur_epoch': epoch, 'best_loss': best_loss},
-                       ckpt_path)
-        else:
-            epochs_no_improve += 1
-            if epochs_no_improve >= patience:
-                print('[CycleGAN Make3D] early stopping at epoch %d (no val improvement for %d epochs)' % (epoch, patience))
-                break
+        # Save the LATEST checkpoint every epoch (overwrite). A CycleGAN is trained
+        # adversarially / by cycle-consistency, so no pixel metric (val abs_rel, L1)
+        # improves monotonically — "best-by-metric" + early stopping just froze an
+        # early epoch. Train the full run and keep the most recent weights. val_avg is
+        # still logged above for monitoring.
+        os.makedirs(ckpt_dir, exist_ok=True)
+        torch.save({'state_dict_G_A2B': netG_A2B.state_dict(),
+                    'state_dict_G_B2A': netG_B2A.state_dict(),
+                    'state_dict_D_A': netD_A.state_dict(),
+                    'state_dict_D_B': netD_B.state_dict(),
+                    'cur_epoch': epoch, 'val_rel': val_avg},
+                   ckpt_path)
 
 if __name__ == '__main__':
     main()

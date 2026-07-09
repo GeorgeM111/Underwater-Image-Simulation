@@ -21,6 +21,7 @@ import torch
 from torch.autograd import Variable
 
 from gan_models import *
+from gan_utils import to_gan_range, from_gan_range
 from utils.helpers import AverageMeter
 from utils.metrics import add_results_1
 from config import load_config
@@ -47,9 +48,10 @@ def main():
 
     with torch.no_grad():
         for sample_batched in test_loader:
-            input_A = sample_batched['image_half'].to(device)          # clean
-            input_B = sample_batched['complex_noise_img'].to(device)   # degraded GT
-            fake_B = generator(input_A)
+            input_A = sample_batched['image_half'].to(device)          # clean [0,1]
+            input_B = sample_batched['complex_noise_img'].to(device)   # degraded GT [0,1]
+            # Generator trained in [-1,1]: normalise in, denormalise out to [0,1].
+            fake_B = from_gan_range(generator(to_gan_range(input_A)))
 
             abs_rel, rmse, log_10, a1, a2, a3 = add_results_1(input_B, fake_B, border_crop_size=16)
             for k, v in zip(keys, [abs_rel, rmse, log_10, a1, a2, a3]):

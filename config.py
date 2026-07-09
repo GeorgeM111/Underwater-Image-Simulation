@@ -46,15 +46,43 @@ _DEFAULTS = {
     "make3d_test_depth_dir": "/datas/sandbox/gmoussa/Make3D/Test134Depth/Gridlaserdata",
     "make3d_save_dir": "/datas/sandbox/gmoussa/ground_truth/make3d/train",
     "make3d_test_save_dir": "/datas/sandbox/gmoussa/ground_truth/make3d/test",
-    # ── KITTI (raw dataset; depth is PROJECTED from Velodyne LiDAR, no depth PNGs)
+    # ── KITTI (raw images + completed/annotated depth PNGs, depth_m = png/256) ──────
     "kitti_raw_dir": "/datas/sandbox/gmoussa/kitti",
+    # Completed-depth (data_depth_annotated) root, holding train/ and val/ splits:
+    #   <dir>/<split>/<drive>/proj_depth/groundtruth/image_02/<frame>.png
+    "kitti_completed_depth_dir": "/datas/sandbox/gmoussa/kitti/completed_depth",
     "kitti_gt_train_dir": "/datas/sandbox/gmoussa/ground_truth/kitti/train",
     "kitti_gt_test_dir": "/datas/sandbox/gmoussa/ground_truth/kitti/test",
     "kitti_max_depth_m": 80.0,
+    # Option B (as for Make3D): KITTI depths reach ~80 m, so scale the per-metre Jerlov
+    # beta for the classical haze transmission ONLY (true metric depth kept), else the
+    # haze GT collapses to flat airlight. 10/80 matches NYU's attenuation-vs-depth.
+    "kitti_haze_beta_scale": 0.125,
+    # Processing resolution [W, H] (generator + loader read these; keep in sync).
+    # KITTI frames are ~1242x375 but the Velodyne sees NO sky: the top ~36% of rows
+    # (0..133) have ZERO LiDAR returns, so any depth there would be invented. We
+    # therefore BOTTOM-CENTER CROP to the LiDAR-covered region instead of resizing the
+    # whole frame. /32-divisible. Half = decoder/GT resolution.
+    "kitti_full_size": [1216, 224],
+    "kitti_half_size": [608, 112],
+    # Airlight brightness floor for KITTI GT (see nyu/make3d equivalents).
+    "kitti_airlight_brightness_min": 0.5,
+    # Informative-subset selection (filter_kitti_subset.py), mirroring NYU.
     "kitti_subset_size": 10000,
     "kitti_subset_w_entropy": 1.0 / 3.0,
     "kitti_subset_w_gradient": 1.0 / 3.0,
     "kitti_subset_w_depth": 1.0 / 3.0,
+    # KITTI train/test selection (mirrors nyu_train_mode / nyu_test_mode):
+    #   kitti_train_mode: "all" -> full train split | "subset" -> filtered indices
+    #   kitti_test_mode:  "tail" -> held-out tail of train | "official" -> val split
+    "kitti_train_mode": "subset",
+    "kitti_subset_indices": None,
+    "kitti_test_mode": "tail",
+    # Pre-computed KITTI parameter matrices (beta / atmospheric light).
+    "beta_mat_kitti_train": "/datas/sandbox/gmoussa/parameters/Beta_Mat_KITTI_train.npy",
+    "a_mat_kitti_train":    "/datas/sandbox/gmoussa/parameters/A_Mat_KITTI_train.npy",
+    "beta_mat_kitti_test":  "/datas/sandbox/gmoussa/parameters/Beta_Mat_KITTI_test.npy",
+    "a_mat_kitti_test":     "/datas/sandbox/gmoussa/parameters/A_Mat_KITTI_test.npy",
     # ── Parameters ───────────────────────────────────────────────────────────────
     "beta_mat_nyu_train":    "/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_train.npy",
     "a_mat_nyu_train":       "/datas/sandbox/gmoussa/parameters/A_Mat_NYU_train.npy",
@@ -72,6 +100,9 @@ _DEFAULTS = {
     "batch_size_make3d": 5,
     "epochs": 50,
     "learning_rate": 1.0e-4,
+    # GAN baselines (Pix2Pix / CycleGAN) use the canonical 2e-4 (Isola/Zhu et al.),
+    # not the DenseDepth transfer-learning 1e-4 the Technique_* models use.
+    "gan_learning_rate": 2.0e-4,
     "early_stopping_patience": 5,
     "train_split_ratio": 0.96,
     "num_workers": 4,
@@ -83,6 +114,12 @@ _DEFAULTS = {
     "nyu_subset_w_entropy": 1.0 / 3.0,
     "nyu_subset_w_gradient": 1.0 / 3.0,
     "nyu_subset_w_depth": 1.0 / 3.0,
+    # SSIM diversity pass: after ranking by score, greedily accept images whose
+    # SSIM to every already-accepted image is < threshold (drop near-duplicates),
+    # backfilling from lower-ranked images until subset_size is reached. SSIM is
+    # computed on small ssim_thumb x ssim_thumb grayscale thumbnails.
+    "nyu_subset_ssim_threshold": 0.6,
+    "nyu_subset_ssim_thumb": 32,
     # NYU training set selection (data.nyu.get_train_loader):
     #   nyu_train_mode: "all"    -> full training split
     #                   "subset" -> only the filtered indices below
@@ -138,6 +175,13 @@ _DEFAULTS = {
     # Veiling/airlight background distance (on the 0-255 depth axis). Airlight
     # colour = normalise(exp(-beta_ricardo * airlight_bg_depth)) — red-depleted.
     "airlight_bg_depth": 150.0,
+    # Airlight (veiling-light) brightness ~ uniform(min, 1) per image. PER-DATASET so
+    # regenerating one split can't shift the other's colours. 0.0 = original behaviour;
+    # raising the floor avoids near-black/murky GT. REVERSIBLE: the RNG sequence is
+    # floor-independent (uniform draws one random() regardless), so 0.0 + regenerate
+    # reproduces the original matrices exactly.
+    "nyu_airlight_brightness_min": 0.0,
+    "make3d_airlight_brightness_min": 0.0,
     "gamma": [0.1, 0.1, 0.043],
     "alpha": [0.032, 0.032, 0.012],
     "turbu_p": [0.15, 1.5],
@@ -150,6 +194,13 @@ _DEFAULTS = {
     # Depth
     "nyu_max_depth_m": 10.0,
     "make3d_max_depth_m": 80.0,
+    # Option B (Make3D classical haze): treat Make3D as CLEARER water by scaling the
+    # per-metre Jerlov beta for the transmission ONLY (t = exp(-(beta*scale)*z), TRUE
+    # metric depth kept). Without this, 0-80 m depths drive t~0 everywhere and the
+    # haze GT collapses to flat airlight. Default 10/80 puts Make3D's attenuation-vs-
+    # depth on the same footing as NYU. Applied in BOTH the GT generator (data_2.py)
+    # and the Make3D loader (data/make3d.py); keep them in sync. NYU is unaffected.
+    "make3d_haze_beta_scale": 0.125,
     # Make3D processing resolution [W, H] (generator + loader read these). Raise
     # to reduce the pixelated/blocky look; keep generator & loader in sync.
     "make3d_full_size": [460, 345],

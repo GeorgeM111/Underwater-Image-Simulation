@@ -115,6 +115,17 @@ class LambdaLR():
         return 1.0 - max(0, epoch + self.offset - self.decay_start_epoch) / (self.n_epochs - self.decay_start_epoch)
 
 
+def to_gan_range(x):
+    """Map loader data in [0,1] to [-1,1] — the range a Tanh-output generator expects.
+    Canonical pix2pix/CycleGAN normalise inputs so the Tanh output matches the target."""
+    return x * 2.0 - 1.0
+
+
+def from_gan_range(x):
+    """Map a Tanh generator output in [-1,1] back to [0,1] for metrics / visualisation."""
+    return ((x + 1.0) / 2.0).clamp(0.0, 1.0)
+
+
 def weights_init_normal(m):
     classname = m.__class__.__name__
     if classname.find('Conv') != -1:

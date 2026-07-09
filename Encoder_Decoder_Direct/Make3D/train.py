@@ -33,7 +33,8 @@ from config import load_config
 from models.model_builder import ImageModel
 from data.make3d import get_train_loader, get_val_loader
 from utils.helpers import AverageMeter
-from utils.loss import ssim
+from utils.loss import ssim, gradient_loss
+from utils.tb import log_images
 
 TAG = 'EncDec Make3D'
 
@@ -69,7 +70,9 @@ def main():
         image = sample['image_full'].to(device)
         complex_gt = sample['complex_noise_img'].to(device)
         out = model(image)
-        loss = lambda_l1 * l1(out, complex_gt) + lambda_ssim * ssim_loss(out, complex_gt)
+        # DenseDepth [51] loss = L1 + SSIM + edge/gradient term (the last was missing).
+        loss = (lambda_l1 * l1(out, complex_gt) + lambda_ssim * ssim_loss(out, complex_gt)
+                + cfg.lambda_grad * gradient_loss(out, complex_gt))
         return loss, image.size(0)
 
     start_epoch = 0
@@ -102,6 +105,12 @@ def main():
 
         writer.add_scalar('loss/total', meter.avg, epoch)
         writer.add_scalar('loss/val_total', val_avg, epoch)
+        # Log input / prediction / GT for the last val batch (model already in eval()).
+        with torch.no_grad():
+            _pred = model(sample['image_full'].to(device))
+            log_images(writer, epoch, {'input': sample['image_half'].to(device),
+                                       'pred': _pred,
+                                       'gt': sample['complex_noise_img'].to(device)})
         writer.flush()
         print('[%s] epoch %d/%d  train=%.4f  val=%.4f' % (TAG, epoch, cfg.epochs - 1, meter.avg, val_avg))
 

@@ -200,6 +200,7 @@ def loadZipToMemTest(zip_file):
 #GM - NYU TRAIN
 def generate_and_save_atmosphere_light_beta():
     _seed_params(0)
+    _amin = CONFIG.nyu_airlight_brightness_min
     data, nyu2_train = loadZipToMem(CONFIG.nyu_zip_path)
     data_len = len(nyu2_train)
     #GM
@@ -222,7 +223,7 @@ def generate_and_save_atmosphere_light_beta():
 
         #GM - a gray ambient light that models the surface light only.
         #GM - color comes purely from the water wavelength dependent absorption beta.
-        rand_val_a = random.uniform(0, 1)
+        rand_val_a = random.uniform(_amin, 1.0)
         a_mat = _water_airlight(rand_val_a, beta_mat)   # airlight tinted by THIS image's water type
 
         a_mat_arr.append(a_mat)
@@ -235,6 +236,7 @@ def generate_and_save_atmosphere_light_beta():
 #GM - NYU TEST
 def generate_and_save_atmosphere_light_beta_test():
     _seed_params(1)
+    _amin = CONFIG.nyu_airlight_brightness_min
     data, nyu2_test = loadZipToMemTest(CONFIG.nyu_zip_path)
     data_len = len(nyu2_test)
     #GM
@@ -252,7 +254,7 @@ def generate_and_save_atmosphere_light_beta_test():
 
         # a_mat = [random.uniform(0, 1), random.uniform(0, 1), random.uniform(0, 1)]
 
-        rand_val_a = random.uniform(0, 1)
+        rand_val_a = random.uniform(_amin, 1.0)
         a_mat = _water_airlight(rand_val_a, beta_mat)   # airlight tinted by THIS image's water type
 
         a_mat_arr.append(a_mat)
@@ -265,6 +267,7 @@ def generate_and_save_atmosphere_light_beta_test():
 #GM - Make3D Train
 def generate_and_save_atmosphere_light_beta_make_3D():
     _seed_params(2)
+    _amin = CONFIG.make3d_airlight_brightness_min
     # Use the id-paired file list so the matrix length matches the GT count exactly.
     train_images, _ = _paired_make3d_files(CONFIG.make3d_train_img_dir, CONFIG.make3d_train_depth_dir)
     data_len = len(train_images)
@@ -281,7 +284,7 @@ def generate_and_save_atmosphere_light_beta_make_3D():
 
         # a_mat = [random.uniform(0, 1), random.uniform(0, 1), random.uniform(0, 1)]
 
-        rand_val_a = random.uniform(0, 1)
+        rand_val_a = random.uniform(_amin, 1.0)
         a_mat = _water_airlight(rand_val_a, beta_mat)   # airlight tinted by THIS image's water type
 
         a_mat_arr.append(a_mat)
@@ -294,6 +297,7 @@ def generate_and_save_atmosphere_light_beta_make_3D():
 #GM - Make3D Test
 def generate_and_save_atmosphere_light_beta_make_3D_Test():
     _seed_params(3)
+    _amin = CONFIG.make3d_airlight_brightness_min
     # Use the id-paired file list so the matrix length matches the GT count exactly.
     train_images, _ = _paired_make3d_files(CONFIG.make3d_test_img_dir, CONFIG.make3d_test_depth_dir)
     data_len = len(train_images)
@@ -310,7 +314,7 @@ def generate_and_save_atmosphere_light_beta_make_3D_Test():
 
         # a_mat = [random.uniform(0, 1), random.uniform(0, 1), random.uniform(0, 1)]
 
-        rand_val_a = random.uniform(0, 1)
+        rand_val_a = random.uniform(_amin, 1.0)
         a_mat = _water_airlight(rand_val_a, beta_mat)   # airlight tinted by THIS image's water type
 
         a_mat_arr.append(a_mat)
@@ -555,7 +559,9 @@ def generate_and_save_ricardo_image_make_3D(stIndex, endIndex):
         a_mat = a_mat_arr[idx]
         a_mat_mod = create_reorganize_dimension_custom(a_mat, m, n)
 
-        tx1 = np.exp(-np.multiply(beta_mat_mod, depth_half_m))  # metres * per-metre beta
+        # Option B: Make3D as CLEARER water — scale beta for the transmission only,
+        # keeping TRUE metric depth, so 0-80 m scenes don't collapse to flat airlight.
+        tx1 = np.exp(-np.multiply(beta_mat_mod * CONFIG.make3d_haze_beta_scale, depth_half_m))
 
         # generate 3D unit matrix
         unit_mat = [1.0, 1.0, 1.0]
@@ -639,7 +645,9 @@ def generate_and_save_ricardo_image_make_3D_Test(stIndex, endIndex):
         a_mat = a_mat_arr[idx]
         a_mat_mod = create_reorganize_dimension_custom(a_mat, m, n)
 
-        tx1 = np.exp(-np.multiply(beta_mat_mod, depth_half_m))  # metres * per-metre beta
+        # Option B: Make3D as CLEARER water — scale beta for the transmission only,
+        # keeping TRUE metric depth, so 0-80 m scenes don't collapse to flat airlight.
+        tx1 = np.exp(-np.multiply(beta_mat_mod * CONFIG.make3d_haze_beta_scale, depth_half_m))
 
         # generate 3D unit matrix
         unit_mat = [1.0, 1.0, 1.0]
@@ -668,11 +676,103 @@ def generate_and_save_ricardo_image_make_3D_Test(stIndex, endIndex):
 
 
 
+#GM ------------------------------ KITTI (completed-depth) START -------
+
+def _kitti_gen_params(split, seed_offset, beta_name, a_name):
+    """Sample one Jerlov water type + water-tinted airlight per KITTI frame, for the
+    given completed-depth ``split`` ('train' or 'val'). Mirrors the Make3D generator."""
+    from data.kitti import list_completed_frames
+    _seed_params(seed_offset)
+    _amin = CONFIG.kitti_airlight_brightness_min
+    frames = list_completed_frames(split)
+    data_len = len(frames)
+    del frames
+    print("KITTI %s frames: %d" % (split, data_len))
+    beta_arr, a_mat_arr = [], []
+    for x in range(data_len):
+        if x % 5000 == 0:
+            print("  params %d/%d" % (x, data_len))
+        beta_mat = list(random.choice(CONFIG.jerlov_water_types))
+        beta_arr.append(beta_mat)
+        rand_val_a = random.uniform(_amin, 1.0)
+        a_mat_arr.append(_water_airlight(rand_val_a, beta_mat))
+    save(_os.path.join(_PARAMS_DIR, a_name), a_mat_arr)
+    save(_os.path.join(_PARAMS_DIR, beta_name), beta_arr)
+    print("Sucessfully generated Beta and Atmospheric Light matrices for KITTI - %s." % split)
+
+
+def generate_and_save_atmosphere_light_beta_kitti():
+    _kitti_gen_params('train', 4, 'Beta_Mat_KITTI_train.npy', 'A_Mat_KITTI_train.npy')
+
+
+def generate_and_save_atmosphere_light_beta_kitti_test():
+    _kitti_gen_params('val', 5, 'Beta_Mat_KITTI_test.npy', 'A_Mat_KITTI_test.npy')
+
+
+def _kitti_generate_gt(split, save_dir, beta_name, a_name, stIndex, endIndex, indices=None):
+    """Generate + save KITTI haze/complex GT for a range (or explicit ``indices``).
+
+    Reads the raw image_02 frame and its DENSE completed depth (holes nearest-filled),
+    resizes to kitti_half_size, and applies the SAME physics as Make3D: classical haze
+    with the Option-B beta scale (true metric depth) + the ricardo complex model.
+    """
+    from data.kitti import list_completed_frames, load_frame_image_depth
+    _os.makedirs(save_dir, exist_ok=True)
+    frames = list_completed_frames(split)
+    a_mat_arr = load(_os.path.join(_PARAMS_DIR, a_name))
+    beta_mat_arr = load(_os.path.join(_PARAMS_DIR, beta_name))
+    half = tuple(CONFIG.kitti_half_size)
+    targets = list(indices) if indices is not None else range(stIndex, endIndex)
+    for idx in targets:
+        idx = int(idx)
+        f = frames[idx]
+        # Bottom-center crop to the LiDAR region + densify (shared helper, so the loader
+        # and this generator can never disagree on the image/depth pair).
+        image_full, depth_m = load_frame_image_depth(f, CONFIG.kitti_max_depth_m)
+
+        image_half = cv2.resize(image_full, half, interpolation=cv2.INTER_LINEAR).astype(np.float32) / 255.0  # (H,W,3)
+        depth_half_m = cv2.resize(depth_m, half, interpolation=cv2.INTER_LINEAR).astype(np.float32)           # (H,W) metres
+
+        depth_norm01 = depth_half_m / CONFIG.kitti_max_depth_m       # (H,W) 0-1
+        m, n = depth_half_m.shape
+        depth_half_m_3d = np.repeat(depth_half_m[:, :, None], 3, axis=2)
+
+        beta_mat = beta_mat_arr[idx]
+        a_mat = a_mat_arr[idx]
+        beta_mat_mod = create_reorganize_dimension_custom(beta_mat, m, n)
+        a_mat_mod = create_reorganize_dimension_custom(a_mat, m, n)
+        unit_mat = create_reorganize_dimension_custom([1.0, 1.0, 1.0], m, n)
+
+        # Option B: scale beta for the classical transmission only (true metric depth).
+        tx1 = np.exp(-np.multiply(beta_mat_mod * CONFIG.kitti_haze_beta_scale, depth_half_m_3d))
+        second_term = np.multiply(a_mat_mod, np.subtract(unit_mat, tx1))
+        haze_image = np.add(np.multiply(image_half, tx1), second_term)
+
+        complex_noisy_img = compute_complex_noise(image_half, depth_norm01, beta_mat, a_mat) / 255
+
+        save(_os.path.join(save_dir, str(idx) + "haze_image.npy"), haze_image)
+        save(_os.path.join(save_dir, str(idx) + "complex_haze_image.npy"), complex_noisy_img)
+
+
+def generate_and_save_ricardo_image_kitti(stIndex, endIndex, indices=None):
+    _kitti_generate_gt('train', CONFIG.kitti_gt_train_dir,
+                       'Beta_Mat_KITTI_train.npy', 'A_Mat_KITTI_train.npy',
+                       stIndex, endIndex, indices=indices)
+
+
+def generate_and_save_ricardo_image_kitti_Test(stIndex, endIndex):
+    _kitti_generate_gt('val', CONFIG.kitti_gt_test_dir,
+                       'Beta_Mat_KITTI_test.npy', 'A_Mat_KITTI_test.npy',
+                       stIndex, endIndex)
+
+#GM ------------------------------ KITTI (completed-depth) END -------
+
+
 def another_simple_image_save(image, path):
     image = image.astype(np.float32)
     image = cv2.normalize(image, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
     image = image.astype(np.uint8)
-    cv2.imwrite(path, image)   
+    cv2.imwrite(path, image)
 
 
 

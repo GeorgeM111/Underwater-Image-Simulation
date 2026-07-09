@@ -22,7 +22,7 @@ from config import load_config
 from models.model_builder import build_models
 from data.nyu import get_test_loader
 from utils.helpers import AverageMeter
-from utils.metrics import add_results_1
+from utils.metrics import add_results_1, image_quality
 from utils.physics import compute_complex_image
 
 TECHNIQUE = 2
@@ -57,7 +57,7 @@ def main():
         model_3.eval()
 
     test_loader = get_test_loader(cfg)
-    keys = ['abs_rel', 'rmse', 'log10', 'a1', 'a2', 'a3']
+    keys = ['mae', 'psnr', 'ssim', 'abs_rel', 'rmse', 'log10', 'a1', 'a2', 'a3']
     meters = {k: AverageMeter() for k in keys}
 
     with torch.no_grad():
@@ -75,7 +75,10 @@ def main():
             out_bb = r2[0] if isinstance(r2, tuple) else r2
             pred_complex = compute_complex_image(out_depth, out_bb, beta, a_val, unit, image_half)
 
-            results = add_results_1(complex_gt, pred_complex)
+            # Image-quality metrics (MAE/PSNR/SSIM) reflect visual quality; the
+            # depth-ratio metrics (abs_rel/log10/delta) are kept for continuity.
+            results = tuple(image_quality(complex_gt, pred_complex)) + \
+                      tuple(add_results_1(complex_gt, pred_complex))
             for k, v in zip(keys, results):
                 if torch.isfinite(v):
                     meters[k].update(v.item(), image_full.size(0))

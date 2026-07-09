@@ -25,7 +25,7 @@ from models.model_builder import build_models
 from data.make3d import get_train_loader, get_val_loader
 from utils.helpers import AverageMeter, DepthNorm
 from utils.physics import compute_haze_image, compute_complex_image
-from utils.loss import ssim, VGGPerceptualLoss
+from utils.loss import ssim, gradient_loss, VGGPerceptualLoss
 from utils.tb import make_writer, log_scalars, log_images, log_weights
 
 TECHNIQUE = 4
@@ -97,13 +97,14 @@ def main():
             out_depth, w_depth = model_1(image_full)
             out_bb, w_residue, w_deg = model_2(image_full)
             out_direct, w_dir = model_3(image_full)
-            pred_complex = compute_complex_image(out_depth, out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
+            pred_complex = compute_complex_image(out_depth.detach(), out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
             pred_haze = compute_haze_image(out_depth, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
             w_depth = torch.mean(w_depth, dim=0)
             w_residue = torch.mean(w_residue, dim=0)
             w_deg = torch.mean(w_deg, dim=0)
             w_dir = torch.mean(w_dir, dim=0)
-            loss_depth = (1.0 - w_depth[0]) * ssim_loss(out_depth, depth_n, 1000.0 / 10.0) + w_depth[0] * l1(out_depth, depth_n)
+            loss_depth = (1.0 - w_depth[0]) * ssim_loss(out_depth, depth_n, float(depth_n.max())) + w_depth[0] * l1(out_depth, depth_n)
+            loss_depth = loss_depth + cfg.lambda_grad * gradient_loss(out_depth, depth_n)  # DenseDepth edge/gradient term
             loss_complex = (w_residue[0] * l1(pred_complex, complex_gt) + w_residue[1] * ssim_loss(pred_complex, complex_gt, 1) + w_residue[2] * vgg(pred_complex, complex_gt))
             loss_haze = (w_deg[0] * l1(pred_haze, haze) + w_deg[1] * ssim_loss(pred_haze, haze, 1) + w_deg[2] * vgg(pred_haze, haze))
             loss_direct = (w_dir[0] * l1(out_direct, complex_gt) + w_dir[1] * ssim_loss(out_direct, complex_gt, 1) + w_dir[2] * vgg(out_direct, complex_gt))
@@ -164,13 +165,14 @@ def main():
                 out_depth, w_depth = model_1(image_full)
                 out_bb, w_residue, w_deg = model_2(image_full)
                 out_direct, w_dir = model_3(image_full)
-                pred_complex = compute_complex_image(out_depth, out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
+                pred_complex = compute_complex_image(out_depth.detach(), out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
                 pred_haze = compute_haze_image(out_depth, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
                 w_depth = torch.mean(w_depth, dim=0)
                 w_residue = torch.mean(w_residue, dim=0)
                 w_deg = torch.mean(w_deg, dim=0)
                 w_dir = torch.mean(w_dir, dim=0)
-                v_loss = (1.0 - w_depth[0]) * ssim_loss(out_depth, depth_n, 1000.0 / 10.0) + w_depth[0] * l1(out_depth, depth_n)
+                v_loss = (1.0 - w_depth[0]) * ssim_loss(out_depth, depth_n, float(depth_n.max())) + w_depth[0] * l1(out_depth, depth_n)
+                v_loss = v_loss + cfg.lambda_grad * gradient_loss(out_depth, depth_n)  # DenseDepth edge/gradient term
                 v_loss = v_loss + (w_residue[0] * l1(pred_complex, complex_gt) + w_residue[1] * ssim_loss(pred_complex, complex_gt, 1) + w_residue[2] * vgg(pred_complex, complex_gt))
                 v_loss = v_loss + (w_deg[0] * l1(pred_haze, haze) + w_deg[1] * ssim_loss(pred_haze, haze, 1) + w_deg[2] * vgg(pred_haze, haze))
                 v_loss = v_loss + (w_dir[0] * l1(out_direct, complex_gt) + w_dir[1] * ssim_loss(out_direct, complex_gt, 1) + w_dir[2] * vgg(out_direct, complex_gt))

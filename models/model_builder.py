@@ -88,9 +88,18 @@ class ImageModel(nn.Module):
 
 
 def _global_terms(technique):
-    """Number of loss terms combined by the var2 global softmax head."""
-    # T1/T2: depth + complex + haze (3).  T3/T4: + direct (4, Eq. 21).
-    return 4 if technique in (3, 4) else 3
+    """Number of loss terms combined by the var2 global softmax head.
+
+    Matches the paper's ablation:
+      T1: depth + complex           (2, Eq. 13 — Ld vs Lp only; NO initial-degraded Lt)
+      T2: depth + complex + haze    (3, Eq. 17 — adds Lt)
+      T3/T4: + direct               (4, Eq. 21 — adds Lg)
+    """
+    if technique == 1:
+        return 2
+    if technique == 2:
+        return 3
+    return 4
 
 
 def build_models(technique, variant):

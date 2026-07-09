@@ -25,8 +25,9 @@ from torch.autograd import Variable
 from tensorboardX import SummaryWriter
 
 from gan_models import *
-from gan_utils import ReplayBuffer, LambdaLR, Logger, weights_init_normal
+from gan_utils import ReplayBuffer, LambdaLR, Logger, weights_init_normal, to_gan_range, from_gan_range
 from utils.helpers import AverageMeter
+from utils.tb import log_images
 from config import load_config
 from data.nyu import get_train_loader
 
@@ -46,7 +47,7 @@ def main():
 
     cfg = load_config(opt.config)
     n_epochs = opt.n_epochs if opt.n_epochs is not None else cfg.epochs
-    lr = opt.lr if opt.lr is not None else cfg.learning_rate
+    lr = opt.lr if opt.lr is not None else cfg.gan_learning_rate
     if opt.batchSize is not None:
         cfg.batch_size_nyu = opt.batchSize
 
@@ -62,8 +63,10 @@ def main():
     generator.apply(weights_init_normal)
     discriminator.apply(weights_init_normal)
 
-    optimizer_G = torch.optim.Adam(generator.parameters(), lr=lr)
-    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=lr)
+    # GAN-standard Adam betas (Isola et al. / pix2pix): beta1=0.5. The torch default
+    # beta1=0.9 destabilises adversarial training (and CycleGAN here already uses 0.5).
+    optimizer_G = torch.optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
+    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
     lr_scheduler_G = torch.optim.lr_scheduler.LambdaLR(
         optimizer_G, lr_lambda=LambdaLR(n_epochs, opt.epoch, opt.decay_epoch).step)
     lr_scheduler_D = torch.optim.lr_scheduler.LambdaLR(
@@ -100,6 +103,9 @@ def main():
         for sample_batched in train_loader:
             input_A = Variable(sample_batched['image_half'].to(device))          # clean (domain A)
             input_B = Variable(sample_batched['complex_noise_img'].to(device))   # degraded (domain B)
+            # pix2pix trains in [-1,1] (Tanh generator); normalise the [0,1] loader data.
+            input_A = to_gan_range(input_A)
+            input_B = to_gan_range(input_B)
 
             valid = Variable(Tensor(np.ones((input_A.size(0), *patch))), requires_grad=False)
             fake = Variable(Tensor(np.zeros((input_A.size(0), *patch))), requires_grad=False)
@@ -129,16 +135,19 @@ def main():
         lr_scheduler_G.step(); lr_scheduler_D.step()
         writer.add_scalar('loss_G', losses_G.avg, epoch)
         writer.add_scalar('loss_D', losses_D.avg, epoch)
+        log_images(writer, epoch, {'input_A': from_gan_range(input_A), 'fake_B': from_gan_range(fake_B),
+                                   'gt_B': from_gan_range(input_B)})
         writer.flush()
         print('[Pix2Pix NYU] epoch %d/%d  loss_G=%.4f  loss_D=%.4f' % (epoch, n_epochs - 1, losses_G.avg, losses_D.avg))
 
-        if losses_G.avg < best_loss:
-            best_loss = losses_G.avg
-            os.makedirs(ckpt_dir, exist_ok=True)
-            torch.save({'state_dict_G': generator.state_dict(),
-                        'state_dict_D': discriminator.state_dict(),
-                        'cur_epoch': epoch, 'best_loss': best_loss},
-                       ckpt_path)
+        # Save the LATEST checkpoint every epoch (overwrite). The GAN loss_G is not a
+        # quality signal, so "best-by-loss" just froze the first epoch. Keep the most
+        # recent weights instead.
+        os.makedirs(ckpt_dir, exist_ok=True)
+        torch.save({'state_dict_G': generator.state_dict(),
+                    'state_dict_D': discriminator.state_dict(),
+                    'cur_epoch': epoch, 'loss_G': losses_G.avg},
+                   ckpt_path)
 
     writer.close()
 

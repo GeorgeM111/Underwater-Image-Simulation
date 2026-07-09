@@ -32,7 +32,8 @@ from config import load_config
 from models.model_builder import ImageModel
 from data.nyu import get_train_loader
 from utils.helpers import AverageMeter, DepthNorm, colorize, simple_save_images
-from utils.loss import ssim
+from utils.loss import ssim, gradient_loss
+from utils.tb import log_images
 
 
 def main():
@@ -105,7 +106,9 @@ def main():
             loss_ricardo_image_direct = l1_criterion(output_ricardo_image_direct, complex_image_tensor)
             loss_ssim_ricardo_image_direct = torch.clamp((1 - ssim(output_ricardo_image_direct.float(), complex_image_tensor.float(),
                                                             val_range=1)) * 0.5, 0, 1)
-            loss_ricardo_image_total = (cfg.lambda_l1 * loss_ricardo_image_direct) + (cfg.lambda_ssim * loss_ssim_ricardo_image_direct)
+            # DenseDepth [51] loss = L1 + SSIM + edge/gradient term (the last was missing).
+            loss_grad_ricardo = gradient_loss(output_ricardo_image_direct, complex_image_tensor)
+            loss_ricardo_image_total = (cfg.lambda_l1 * loss_ricardo_image_direct) + (cfg.lambda_ssim * loss_ssim_ricardo_image_direct) + (cfg.lambda_grad * loss_grad_ricardo)
             del complex_image_tensor, output_ricardo_image_direct
 
             # Update step
@@ -126,6 +129,14 @@ def main():
         # Log progress; print after every epochs into the console
         print('Epoch: [{:.4f}] \t The loss of this epoch is: {:.4f} '.format(epoch, losses.avg))
         writer.add_scalar('Train/Each Epoch Loss', losses.avg, epoch)
+        # Log input / prediction / GT for the last batch (re-forward; the loop frees them).
+        model.eval()
+        with torch.no_grad():
+            _pred = model(sample_batched['image_full'].to(device))
+            log_images(writer, epoch, {'input': sample_batched['image_half'].to(device),
+                                       'pred': _pred,
+                                       'gt': sample_batched['complex_noise_img'].to(device)})
+        writer.flush()
 
         if losses.avg < best_loss:
             print("Here the training loss got reduced, hence printing")

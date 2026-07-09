@@ -13,6 +13,7 @@ test = [split_idx, end)).
 """
 
 import os
+import random
 from io import BytesIO
 
 import numpy as np
@@ -46,12 +47,18 @@ def loadZipToMem(zip_file, csv='data/nyu2_train.csv'):
 
 
 class depthDatasetMemory(Dataset):
-    def __init__(self, data, nyu2_train, beta_mat_arr, a_mat_arr, gt_dir, transform=None):
+    def __init__(self, data, nyu2_train, beta_mat_arr, a_mat_arr, gt_dir, transform=None,
+                 augment=False):
         self.data, self.nyu_dataset = data, nyu2_train
         self.beta_mat_arr = beta_mat_arr
         self.a_mat_arr = a_mat_arr
         self.gt_dir = gt_dir
         self.transform = transform
+        # Shared horizontal flip applied to the input AND every pre-computed GT
+        # target together, so input<->GT stay pixel-aligned (unlike a channel swap,
+        # which cannot be mirrored onto the cached colour GT). beta/A are spatially
+        # uniform, so they need no flip.
+        self.augment = augment
 
     def __getitem__(self, idx):
         haze_image_name = os.path.join(self.gt_dir, str(idx) + "haze_image" + ".npy")
@@ -110,7 +117,19 @@ class depthDatasetMemory(Dataset):
 
         del complex_noisy_img
 
-        return {'image_full': image_full.float(), 'image_half': image_half_tensor, 'depth': depth_half_10_1000.float(),
+        image_full = image_full.float()
+        depth_half_10_1000 = depth_half_10_1000.float()
+
+        # Aligned augmentation: flip input and every GT target on the width axis
+        # together (a channel swap cannot be applied to the cached colour GT).
+        if self.augment and random.random() < 0.5:
+            image_full = torch.flip(image_full, dims=[-1])
+            image_half_tensor = torch.flip(image_half_tensor, dims=[-1])
+            depth_half_10_1000 = torch.flip(depth_half_10_1000, dims=[-1])
+            haze_image_tensor = torch.flip(haze_image_tensor, dims=[-1])
+            complex_image_tensor = torch.flip(complex_image_tensor, dims=[-1])
+
+        return {'image_full': image_full, 'image_half': image_half_tensor, 'depth': depth_half_10_1000,
                 'haze_image': haze_image_tensor, 'beta': beta_mat_mod,
                 'a_val': a_mat_mod, 'unit_mat': unit_mat, 'complex_noise_img': complex_image_tensor}
 
@@ -131,17 +150,19 @@ class depthDatasetMemory(Dataset):
 
 
 def _build_full_dataset(config, transform, csv='data/nyu2_train.csv',
-                        beta_path=None, a_path=None, gt_dir=None):
+                        beta_path=None, a_path=None, gt_dir=None, augment=False):
     """Build the full NYU dataset for a given CSV / parameter-matrix / GT dir.
 
     Defaults reproduce the training split (nyu2_train.csv + *_NYU_train params +
     nyu_gt_train_dir); pass the test paths to build the official-654 test set.
+    ``augment`` enables the aligned horizontal-flip augmentation (train only).
     """
     data, rows = loadZipToMem(config.nyu_zip_path, csv=csv)
     beta_mat_arr = load(beta_path or config.beta_mat_nyu_train)
     a_mat_arr = load(a_path or config.a_mat_nyu_train)
     return depthDatasetMemory(data, rows, beta_mat_arr, a_mat_arr,
-                              gt_dir=gt_dir or config.nyu_gt_train_dir, transform=transform)
+                              gt_dir=gt_dir or config.nyu_gt_train_dir, transform=transform,
+                              augment=augment)
 
 
 def _resolve_subset_path(config):
@@ -166,7 +187,7 @@ def get_train_loader(config):
     Either way, indices are clipped to the training split so the held-out test
     tail can never leak in.
     """
-    full = _build_full_dataset(config, getDefaultTrainTransform())
+    full = _build_full_dataset(config, getDefaultTrainTransform(), augment=True)
     split_idx = int(config.train_split_ratio * len(full))
 
     mode = getattr(config, 'nyu_train_mode', 'all')

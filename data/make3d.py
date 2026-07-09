@@ -117,7 +117,12 @@ class _Make3DDataset(Dataset):
             complex_noisy = torch.flip(complex_noisy, dims=[2])
             depth_t = torch.flip(depth_t, dims=[2])
 
-        beta_spatial = create_reorganize_dimension(self.beta_mat_arr[idx], H, W)
+        # Option B: deliver the CLEARER-water beta (scaled) so the classical haze at
+        # training time matches the GT generator (data_2.py). True metric depth is used
+        # via max_depth_m=make3d_max_depth_m in compute_haze_image, so the scale must
+        # live on beta here (NOT on depth). NYU is unaffected (its loader is separate).
+        beta_spatial = create_reorganize_dimension(
+            np.asarray(self.beta_mat_arr[idx], dtype=np.float32) * CONFIG.make3d_haze_beta_scale, H, W)
         a_spatial = create_reorganize_dimension(self.a_mat_arr[idx], H, W)
         unit_spatial = create_reorganize_dimension([1.0, 1.0, 1.0], H, W)
 

@@ -31,6 +31,16 @@ second pass normalises), then combined:
 
     score = w_ent*ent_norm + w_grad*grad_norm + w_depth*depth_norm
 
+Diversity (SSIM)
+----------------
+NYU is video sequences, so the highest-scoring images include many near-duplicate
+consecutive frames. After ranking by score, a greedy SSIM pass keeps an image
+only if its structural similarity (SSIM) to EVERY already-accepted image is below
+``nyu_subset_ssim_threshold``; rejected (too-similar) images are skipped and
+lower-ranked-but-distinct images backfill, until ``subset_size`` diverse images
+are collected. If the pool runs dry first, the threshold is relaxed and the
+rejects are re-scanned. Disable with ``--no-diversity`` for the plain top-N.
+
 Everything is configurable (config.yaml + CLI overrides):
     subset_size -> config.nyu_subset_size        / --subset-size
     w_ent       -> config.nyu_subset_w_entropy    / --w-entropy
@@ -119,6 +129,75 @@ def _minmax(a):
     return (a - lo) / (hi - lo)
 
 
+def _thumbnail(gray_u8, size):
+    """Small [0,1] grayscale thumbnail (flattened) for fast SSIM comparison."""
+    t = cv2.resize(gray_u8, (size, size), interpolation=cv2.INTER_AREA)
+    return (t.astype(np.float32) / 255.0).reshape(-1)
+
+
+def select_diverse(order, thumbs, target, threshold, relax=0.05):
+    """Greedy SSIM-diversity selection.
+
+    Walk candidates in score-DESC order (``order`` = candidate positions). Accept
+    one only if its SSIM to EVERY already-accepted image is below ``threshold``
+    (near-duplicates, e.g. consecutive frames, are skipped). Because rejects are
+    skipped, lower-ranked-but-distinct images naturally BACKFILL. If the whole
+    pool is exhausted before reaching ``target``, the threshold is relaxed by
+    ``relax`` and the rejected images are re-scanned; finally any residual deficit
+    is filled by score order. Returns accepted candidate positions (accept order).
+
+    SSIM here is the global structural-similarity index between two thumbnails
+    (single window = whole thumbnail), vectorised over the accepted set so the
+    max-similarity check is one BLAS matvec per candidate.
+    """
+    N, P = thumbs.shape
+    C1, C2 = 0.01 ** 2, 0.03 ** 2                      # data range = 1.0 ([0,1] thumbnails)
+    A = np.zeros((target, P), dtype=np.float32)        # accepted thumbnails
+    mu = np.zeros(target, dtype=np.float64)
+    var = np.zeros(target, dtype=np.float64)
+    cnt = 0
+    accepted = []
+    remaining = list(order)
+    th = threshold
+
+    pbar = tqdm(total=target, desc='diversity(SSIM)', unit='img')
+    while cnt < target and remaining and th <= 1.0:
+        still = []
+        for k in remaining:
+            if cnt >= target:
+                still.append(k)
+                continue
+            x = thumbs[k]
+            if cnt > 0:
+                mu_x = float(x.mean())
+                var_x = float(x.var())
+                cov = A[:cnt].dot(x) / P - mu[:cnt] * mu_x
+                num = (2 * mu_x * mu[:cnt] + C1) * (2 * cov + C2)
+                den = (mu_x * mu_x + mu[:cnt] * mu[:cnt] + C1) * (var_x + var[:cnt] + C2)
+                if float((num / den).max()) >= th:
+                    still.append(k)
+                    continue
+            A[cnt] = x
+            mu[cnt] = x.mean()
+            var[cnt] = x.var()
+            accepted.append(k)
+            cnt += 1
+            pbar.update(1)
+        remaining = still
+        if cnt < target and remaining:
+            th += relax                                # relax and retry the rejected
+    # threshold hit 1.0 but still short -> backfill by score
+    for k in remaining:
+        if cnt >= target:
+            break
+        A[cnt] = thumbs[k]
+        accepted.append(k)
+        cnt += 1
+        pbar.update(1)
+    pbar.close()
+    return accepted, th
+
+
 def main():
     parser = argparse.ArgumentParser(description='Select the most-informative NYU subset (composite score).')
     parser.add_argument('--config', default=None, help='path to config YAML (default ./config.yaml)')
@@ -134,6 +213,14 @@ def main():
                         help='resize the (square) grayscale image before entropy/gradient; 0 = full res')
     parser.add_argument('--output-dir', default=None,
                         help='where to write outputs (default: the config parameters dir)')
+    parser.add_argument('--ssim-threshold', type=float, default=None,
+                        help='drop an image if SSIM to any accepted image >= this (default config)')
+    parser.add_argument('--ssim-thumb', type=int, default=None,
+                        help='thumbnail size for the SSIM comparison (default config)')
+    parser.add_argument('--ssim-relax', type=float, default=0.05,
+                        help='if too few diverse images, relax the threshold by this and retry')
+    parser.add_argument('--no-diversity', action='store_true',
+                        help='disable the SSIM diversity pass (plain top-N by score)')
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -142,9 +229,13 @@ def main():
     w_grad = args.w_gradient if args.w_gradient is not None else cfg.nyu_subset_w_gradient
     w_depth = args.w_depth if args.w_depth is not None else cfg.nyu_subset_w_depth
     out_dir = args.output_dir if args.output_dir is not None else os.path.dirname(cfg.beta_mat_nyu_train)
+    ssim_th = args.ssim_threshold if args.ssim_threshold is not None else cfg.nyu_subset_ssim_threshold
+    ssim_thumb = args.ssim_thumb if args.ssim_thumb is not None else cfg.nyu_subset_ssim_thumb
 
     print("Composite NYU subset  |  size=%d  weights: ent=%.3f grad=%.3f depth=%.3f  pool=%s  resize=%s"
           % (subset_size, w_ent, w_grad, w_depth, args.pool, args.resize))
+    print("Diversity: %s  (SSIM threshold=%.2f, thumb=%dx%d)"
+          % ("OFF" if args.no_diversity else "ON", ssim_th, ssim_thumb, ssim_thumb))
 
     data, rows = loadZipToMem(cfg.nyu_zip_path)
     n_total = len(rows)
@@ -152,10 +243,11 @@ def main():
     candidates = list(range(0, pool_end))
     print("Total images: %d  |  candidate pool: %d" % (n_total, len(candidates)))
 
-    # ---- Pass 1: collect RAW terms for every candidate ----
+    # ---- Pass 1: collect RAW terms (+ SSIM thumbnail) for every candidate ----
     ent_raw = np.zeros(len(candidates), dtype=np.float64)
     grad_raw = np.zeros(len(candidates), dtype=np.float64)
     depth_raw = np.zeros(len(candidates), dtype=np.float64)
+    thumbs = None if args.no_diversity else np.zeros((len(candidates), ssim_thumb * ssim_thumb), dtype=np.float32)
 
     for k, idx in enumerate(tqdm(candidates, desc='scoring', unit='img')):
         row = rows[idx]
@@ -164,6 +256,8 @@ def main():
             ent_raw[k] = raw_entropy(gray)
             grad_raw[k] = raw_gradient(gray)
             depth_raw[k] = raw_depth_range(Image.open(BytesIO(data[row[1]]))) if len(row) > 1 else 0.0
+            if thumbs is not None:
+                thumbs[k] = _thumbnail(gray, ssim_thumb)
         except Exception as exc:
             print("  [warn] idx %d failed: %s" % (idx, exc))
             ent_raw[k] = grad_raw[k] = depth_raw[k] = np.nan
@@ -173,11 +267,20 @@ def main():
     grad_n = _minmax(grad_raw)
     depth_n = _minmax(depth_raw)
     score = w_ent * ent_n + w_grad * grad_n + w_depth * depth_n
+    score = np.where(np.isfinite(score), score, -np.inf)   # failed images sort last
 
     idx_arr = np.asarray(candidates, dtype=np.int64)
-    order = np.argsort(score)[::-1]                 # descending by score
+    order = np.argsort(score)[::-1]                 # candidate positions, score DESC
     top_n = min(subset_size, len(candidates))
-    top_indices = idx_arr[order[:top_n]]            # sorted by score DESC (as requested)
+
+    # ---- Selection ----
+    if args.no_diversity:
+        chosen_pos = list(order[:top_n])            # plain top-N by score
+        final_th = None
+    else:
+        chosen_pos, final_th = select_diverse(order, thumbs, top_n, ssim_th, args.ssim_relax)
+        print("Diversity pass kept %d images (final SSIM threshold %.2f)" % (len(chosen_pos), final_th))
+    top_indices = idx_arr[np.asarray(chosen_pos, dtype=np.int64)]   # in acceptance (score-desc) order
 
     os.makedirs(out_dir, exist_ok=True)
     npy_path = os.path.join(out_dir, "%d_filtered_nyu.npy" % subset_size)
@@ -200,10 +303,11 @@ def main():
         a = a[np.isfinite(a)]
         print("  %-9s min=%.4f  max=%.4f  mean=%.4f" % (name, a.min(), a.max(), a.mean()))
 
+    chosen_scores = score[np.asarray(chosen_pos, dtype=np.int64)]
     print("\nRaw term stats over %d images:" % len(candidates))
     stats('entropy', ent_raw); stats('gradient', grad_raw); stats('depth', depth_raw)
     print("Chosen subset score: min=%.4f  max=%.4f  mean=%.4f"
-          % (score[order[:top_n]].min(), score[order[:top_n]].max(), score[order[:top_n]].mean()))
+          % (chosen_scores.min(), chosen_scores.max(), chosen_scores.mean()))
     print("\nSaved:")
     print("  top-%d indices (score desc) -> %s" % (top_n, npy_path))
     print("  full ranking (all + sub-scores) -> %s" % csv_path)

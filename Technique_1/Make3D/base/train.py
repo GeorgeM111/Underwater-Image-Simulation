@@ -25,7 +25,7 @@ from models.model_builder import build_models
 from data.make3d import get_train_loader, get_val_loader
 from utils.helpers import AverageMeter, DepthNorm
 from utils.physics import compute_haze_image, compute_complex_image
-from utils.loss import ssim
+from utils.loss import ssim, gradient_loss
 from utils.tb import make_writer, log_scalars, log_images, log_weights
 
 TECHNIQUE = 1
@@ -95,12 +95,14 @@ def main():
 
             out_depth = model_1(image_full)
             out_bb = model_2(image_full)
-            pred_complex = compute_complex_image(out_depth, out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
+            pred_complex = compute_complex_image(out_depth.detach(), out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
             pred_haze = compute_haze_image(out_depth, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
-            loss_depth = lambda_ssim * ssim_loss(out_depth, depth_n, 1000.0 / 10.0) + lambda_l1 * l1(out_depth, depth_n)
+            loss_depth = lambda_ssim * ssim_loss(out_depth, depth_n, float(depth_n.max())) + lambda_l1 * l1(out_depth, depth_n)
+            loss_depth = loss_depth + cfg.lambda_grad * gradient_loss(out_depth, depth_n)  # DenseDepth edge/gradient term
             loss_complex = lambda_ssim * ssim_loss(pred_complex, complex_gt, 1) + lambda_l1 * l1(pred_complex, complex_gt)
             loss_haze = lambda_ssim * ssim_loss(pred_haze, haze, 1) + lambda_l1 * l1(pred_haze, haze)
-            total_loss = loss_depth + loss_complex + loss_haze
+            # Technique 1 (paper Eq. 11): Ltotal = Ld + Lp only (no Lt/haze term; T1 != T2).
+            total_loss = loss_depth + loss_complex
 
             meter.update(total_loss.item(), image_full.size(0))
             _bs = image_full.size(0)
@@ -156,12 +158,13 @@ def main():
                 complex_gt = batch['complex_noise_img'].to(device)
                 out_depth = model_1(image_full)
                 out_bb = model_2(image_full)
-                pred_complex = compute_complex_image(out_depth, out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
+                pred_complex = compute_complex_image(out_depth.detach(), out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
                 pred_haze = compute_haze_image(out_depth, beta, a_val, unit, image_half, max_depth_m=cfg.make3d_max_depth_m)
-                loss_depth = lambda_ssim * ssim_loss(out_depth, depth_n, 1000.0 / 10.0) + lambda_l1 * l1(out_depth, depth_n)
+                loss_depth = lambda_ssim * ssim_loss(out_depth, depth_n, float(depth_n.max())) + lambda_l1 * l1(out_depth, depth_n)
+                loss_depth = loss_depth + cfg.lambda_grad * gradient_loss(out_depth, depth_n)  # DenseDepth edge/gradient term
                 loss_complex = lambda_ssim * ssim_loss(pred_complex, complex_gt, 1) + lambda_l1 * l1(pred_complex, complex_gt)
                 loss_haze = lambda_ssim * ssim_loss(pred_haze, haze, 1) + lambda_l1 * l1(pred_haze, haze)
-                v_loss = loss_depth + loss_complex + loss_haze
+                v_loss = loss_depth + loss_complex  # T1: Ld + Lp only (match train objective)
                 val_meter.update(v_loss.item(), image_full.size(0))
         val_avg = val_meter.avg
         log_scalars(writer, epoch, {'loss/val_total': val_avg})

@@ -26,8 +26,9 @@ import torch
 import torch.nn.functional as F
 
 from gan_models import *
+from gan_utils import to_gan_range, from_gan_range
 from utils.helpers import AverageMeter
-from utils.metrics import add_results_1
+from utils.metrics import add_results_1, image_quality
 from config import load_config
 from data.make3d import get_test_loader
 
@@ -47,25 +48,27 @@ def main():
     netG_A2B.eval()
 
     test_loader = get_test_loader(cfg)
-    keys = ['abs_rel', 'rmse', 'log10', 'a1', 'a2', 'a3']
+    # MAE/PSNR/SSIM are the meaningful, BOUNDED metrics for a generated IMAGE; the
+    # depth-ratio metrics (abs_rel/log10/delta) are kept for continuity with the paper.
+    keys = ['mae', 'psnr', 'ssim', 'abs_rel', 'rmse', 'log10', 'a1', 'a2', 'a3']
     meters = {k: AverageMeter() for k in keys}
 
     with torch.no_grad():
         for sample_batched in test_loader:
-            input_A = sample_batched['image_half'].to(device)          # clean (domain A)
-            input_B = sample_batched['complex_noise_img'].to(device)   # degraded GT (domain B)
-            fake_B = netG_A2B(input_A)
-            fake_B = F.interpolate(fake_B, size=input_B.shape[-2:], mode='bicubic', align_corners=False)
+            input_A = sample_batched['image_half'].to(device)          # clean [0,1] (domain A)
+            input_B = sample_batched['complex_noise_img'].to(device)   # degraded GT [0,1] (domain B)
+            # Generator trained in [-1,1]: normalise in, denormalise out to [0,1].
+            fake_B = netG_A2B(to_gan_range(input_A))
+            fake_B = from_gan_range(F.interpolate(fake_B, size=input_B.shape[-2:], mode='bicubic', align_corners=False))
 
-            abs_rel, rmse, log_10, a1, a2, a3 = add_results_1(input_B, fake_B, border_crop_size=16)
-            for k, v in zip(keys, [abs_rel, rmse, log_10, a1, a2, a3]):
+            results = tuple(image_quality(input_B, fake_B)) + tuple(add_results_1(input_B, fake_B, border_crop_size=16))
+            for k, v in zip(keys, results):
                 if torch.isfinite(v):
                     meters[k].update(v.item(), input_A.size(0))
 
-    print("{:>10}, {:>10}, {:>10}, {:>10}, {:>10}, {:>10}".format('a1', 'a2', 'a3', 'rel', 'rms', 'log_10'))
-    print("{:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}".format(
-        meters['a1'].avg, meters['a2'].avg, meters['a3'].avg,
-        meters['abs_rel'].avg, meters['rmse'].avg, meters['log10'].avg))
+    print('[CycleGAN Make3D] evaluation:')
+    for k in keys:
+        print('  %-8s %.4f' % (k, meters[k].avg))
 
 
 if __name__ == '__main__':

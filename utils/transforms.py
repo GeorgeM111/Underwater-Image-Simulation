@@ -136,8 +136,16 @@ def getNoTransform(is_test=False):
 
 
 def getDefaultTrainTransform():
+    # NOTE: RandomChannelSwap MUST NOT be used here. The haze/complex ground-truth
+    # targets are PRE-COMPUTED on disk from the ORIGINAL-channel clean image, but a
+    # channel swap only permutes the *input* image at load time -> the network would
+    # be asked to map a channel-permuted input to an unpermuted, colour-dependent
+    # target (an impossible, non-deterministic mapping on ~42% of samples). This is
+    # correct in DenseDepth (whose only target is channel-invariant depth) but WRONG
+    # here where two of the three losses are colour-dependent. It also poisons the
+    # depth branch through the (non-detached) haze loss. Geometric augmentation that
+    # keeps input<->GT aligned (a shared horizontal flip) is done in data.nyu instead.
     return transforms.Compose([
-        RandomChannelSwap(0.5),
         ToTensor()
     ])
 

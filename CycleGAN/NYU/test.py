@@ -25,13 +25,15 @@ import torchvision.utils as vutils
 from tensorboardX import SummaryWriter
 
 from gan_models import *
-from gan_utils import ReplayBuffer, LambdaLR, weights_init_normal
+from gan_utils import ReplayBuffer, LambdaLR, weights_init_normal, to_gan_range, from_gan_range
 from utils.helpers import AverageMeter
+from utils.metrics import add_results_1 as _add_results, image_quality
 from config import load_config
 from data.nyu import get_train_loader, get_test_loader
 import numpy as np
 import warnings
-warnings.filterwarnings("error")
+# Don't promote warnings to errors — benign deprecation warnings would crash the run.
+warnings.filterwarnings("ignore")
 
 
 # This code is very same as "perform_test.py" but the only difference is here I am adding only the code to
@@ -40,16 +42,40 @@ warnings.filterwarnings("error")
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default=None, help='path to config YAML (default ./config.yaml)')
-    parser.add_argument('--resume', default=None, help='checkpoint prefix to load from')
+    parser.add_argument('--resume', default=None, help='CycleGAN checkpoint (default: config checkpoint dir)')
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load data
+    # Direct inference (mirrors the Make3D / Pix2Pix eval). The old path read pre-saved
+    # .pt predictions from resources/, produced by the (commented-out) LogProgress pass
+    # — that directory is empty, so the eval was broken. Translate clean -> degraded
+    # with netG_A2B and score against the real degraded GT.
+    netG_A2B = Generator(3, 3).to(device)
+    ckpt_path = args.resume or os.path.join(cfg.checkpoint_dir, 'CycleGAN', 'CycleGAN_NYU.ckpt')
+    netG_A2B.load_state_dict(torch.load(ckpt_path, map_location=device)['state_dict_G_A2B'])
+    netG_A2B.eval()
+
     test_loader = get_test_loader(cfg)
+    keys = ['mae', 'psnr', 'ssim', 'abs_rel', 'rmse', 'log10', 'a1', 'a2', 'a3']
+    meters = {k: AverageMeter() for k in keys}
 
-    # LogProgress(cfg, test_loader, args.resume)
-    ClacAccuracyOnly(cfg, test_loader)
+    with torch.no_grad():
+        for sample_batched in test_loader:
+            input_A = sample_batched['image_half'].to(device)          # clean [0,1]
+            input_B = sample_batched['complex_noise_img'].to(device)   # degraded GT [0,1]
+            # Generator trained in [-1,1]: normalise in, denormalise out to [0,1].
+            fake_B = netG_A2B(to_gan_range(input_A))
+            fake_B = from_gan_range(F.interpolate(fake_B, size=input_B.shape[-2:], mode='bicubic', align_corners=False))
+            results = tuple(image_quality(input_B, fake_B)) + tuple(_add_results(input_B, fake_B, border_crop_size=16))
+            for k, v in zip(keys, results):
+                if torch.isfinite(v):
+                    meters[k].update(v.item(), input_A.size(0))
+
+    print('[CycleGAN NYU] evaluation:')
+    for k in keys:
+        print('  %-8s %.4f' % (k, meters[k].avg))
 
 def ClacAccuracyOnly(cfg, test_loader):
 
@@ -223,6 +249,10 @@ def LogProgress(cfg, test_loader, resume):
 
         real_A = real_A.to(device, dtype=torch.float)
         real_B = real_B.to(device, dtype=torch.float)
+        # Generators were trained in [-1,1]; feed them normalised data (outputs are
+        # denormalised back to [0,1] before saving for the metric below).
+        real_A = to_gan_range(real_A)
+        real_B = to_gan_range(real_B)
         # --------------------------------- Generators A2B and B2A -----------------------------------
 
         # Identity loss
@@ -294,9 +324,11 @@ def LogProgress(cfg, test_loader, resume):
         saving_path_complex_imag_GT = os.path.join(resources_dir, 'Batch_%d' % i + '_Complex_Imag_GT' + '.pt')
         saving_path_complex_imag_Pred = os.path.join(resources_dir, 'Batch_%d' % i + '_Complex_Imag_Pred' + '.pt')
         saving_path_complex_imag_Pred_A = os.path.join(resources_dir, 'Batch_%d' % i + '_Complex_Imag_Pred_A' + '.pt')
-        torch.save(real_B, saving_path_complex_imag_GT)
-        torch.save(fake_B, saving_path_complex_imag_Pred)
-        torch.save(fake_A, saving_path_complex_imag_Pred_A)
+        # Save in [0,1] (denormalised) so ClacAccuracyOnly's depth-ratio metrics — which
+        # need positive [0,1] values — are correct regardless of the [-1,1] training range.
+        torch.save(from_gan_range(real_B), saving_path_complex_imag_GT)
+        torch.save(from_gan_range(fake_B), saving_path_complex_imag_Pred)
+        torch.save(from_gan_range(fake_A), saving_path_complex_imag_Pred_A)
 
         # Log progress
         if i % 5 == 0:
