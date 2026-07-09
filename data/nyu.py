@@ -36,7 +36,16 @@ def _is_numpy_image(img):
     return isinstance(img, np.ndarray) and (img.ndim in {2, 3})
 
 
+# The NYU archive is ~4.4 GB and loadZipToMem holds it entirely in RAM. A trainer now
+# builds a train AND a val (AND possibly a test) dataset, so without this cache the same
+# archive would be read into memory two or three times over.
+_ZIP_CACHE = {}
+
+
 def loadZipToMem(zip_file, csv='data/nyu2_train.csv'):
+    key = (zip_file, csv)
+    if key in _ZIP_CACHE:
+        return _ZIP_CACHE[key]
     print('Loading dataset zip file...', end='')
     from zipfile import ZipFile
     input_zip = ZipFile(zip_file)
@@ -44,7 +53,8 @@ def loadZipToMem(zip_file, csv='data/nyu2_train.csv'):
     rows = list((row.split(',') for row in (data[csv]).decode("utf-8").split('\n') if len(row) > 0))
     rows = shuffle(rows, random_state=0)
     print('Loaded ({0}).'.format(len(rows)))
-    return data, rows
+    _ZIP_CACHE[key] = (data, rows)
+    return _ZIP_CACHE[key]
 
 
 class depthDatasetMemory(Dataset):
@@ -180,18 +190,8 @@ def _resolve_subset_path(config):
     return os.path.join(params_dir, "%d_filtered_nyu.npy" % config.nyu_subset_size)
 
 
-def get_train_loader(config):
-    """NYU training loader.
-
-    ``config.nyu_train_mode`` selects the training set:
-        'all'    -> the full training split (indices [0, split_idx))
-        'subset' -> only the filtered indices from _resolve_subset_path(config)
-    Either way, indices are clipped to the training split so the held-out test
-    tail can never leak in.
-    """
-    full = _build_full_dataset(config, getDefaultTrainTransform(), augment=True)
-    split_idx = int(config.train_split_ratio * len(full))
-
+def _training_pool(config, split_idx):
+    """Indices available for training (never the held-out test tail)."""
     mode = getattr(config, 'nyu_train_mode', 'all')
     if mode == 'subset':
         path = _resolve_subset_path(config)
@@ -201,14 +201,47 @@ def get_train_loader(config):
             raise ValueError(
                 "nyu_train_mode='subset' but '%s' has no indices in the training "
                 "split [0, %d)." % (path, split_idx))
-        indices = idx.tolist()
-        print("[data.nyu] train mode=subset  file=%s  using %d/%d images"
-              % (path, len(indices), split_idx))
-    else:
-        indices = list(range(0, split_idx))
-        print("[data.nyu] train mode=all  using full training split (%d images)" % split_idx)
+        # The subset file is ordered by information score (desc). Sort ascending by
+        # dataset index so the train/val cut is NOT "val = the lowest-scoring images".
+        # nyu2_train is already shuffled (random_state=0), so index order is scene-random.
+        return sorted(idx.tolist()), "subset(%s)" % os.path.basename(path)
+    return list(range(0, split_idx)), "all"
 
-    return DataLoader(Subset(full, indices), config.batch_size_nyu, shuffle=True, drop_last=True,
+
+def _train_val_indices(config):
+    """Deterministic train/val split of the training pool (mirrors data.make3d)."""
+    data, rows = loadZipToMem(config.nyu_zip_path)
+    split_idx = int(config.train_split_ratio * len(rows))
+    pool, tag = _training_pool(config, split_idx)
+    val_ratio = float(getattr(config, 'nyu_val_ratio', 0.05))
+    k = int((1.0 - val_ratio) * len(pool))
+    return pool[:k], pool[k:], tag, split_idx
+
+
+def get_train_loader(config):
+    """NYU training loader (augmented), excluding the held-out validation slice.
+
+    ``config.nyu_train_mode``: 'all' -> full training split; 'subset' -> filtered
+    indices. Either way indices are clipped to [0, split_idx) so the test tail can
+    never leak in, and the last ``nyu_val_ratio`` of the pool is reserved for
+    validation (same contract as data.make3d).
+    """
+    full = _build_full_dataset(config, getDefaultTrainTransform(), augment=True)
+    train_idx, val_idx, tag, split_idx = _train_val_indices(config)
+    print("[data.nyu] train mode=%s  train=%d  val=%d  (pool clipped to [0,%d))"
+          % (tag, len(train_idx), len(val_idx), split_idx))
+    return DataLoader(Subset(full, train_idx), config.batch_size_nyu, shuffle=True, drop_last=True,
+                      num_workers=config.num_workers)
+
+
+def get_val_loader(config):
+    """Held-out validation slice of the training pool (no augmentation, deterministic).
+
+    Drives checkpoint selection + early stopping, exactly like data.make3d.get_val_loader.
+    """
+    full = _build_full_dataset(config, getNoTransform(), augment=False)
+    _, val_idx, _, _ = _train_val_indices(config)
+    return DataLoader(Subset(full, val_idx), config.batch_size_nyu, shuffle=False, drop_last=False,
                       num_workers=config.num_workers)
 
 

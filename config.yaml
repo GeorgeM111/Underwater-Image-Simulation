@@ -62,7 +62,7 @@ checkpoint_dir: "${PROJECT_OUT}/checkpoints"
 runs_dir:       "${PROJECT_OUT}/runs"
 
 # --- Training -----------------------------------------------------------------
-batch_size_nyu:          32
+batch_size_nyu:          16
 batch_size_make3d:       5
 epochs:                  50
 learning_rate:           1.0e-4    # DenseDepth-style transfer-learning LR. The paper's
@@ -102,6 +102,9 @@ nyu_subset_indices:            # blank -> auto ({nyu_subset_size}_filtered_nyu.n
 #   "tail"     -> held-out tail of nyu2_train (paper's 96/4 protocol; DEFAULT)
 #   "official" -> official NYU-v2 654 test set (nyu2_test.csv + *_NYU_test params/GT)
 nyu_test_mode:      "tail"
+# Fraction of the NYU training pool held out for validation (checkpoint selection +
+# early stopping), mirroring data.make3d. Separate from train_split_ratio (test tail).
+nyu_val_ratio:      0.05
 
 # Seed for parameter-matrix (beta / atmospheric-light) generation, so regenerating
 # them is reproducible and cannot silently desync from the pre-computed GT.

@@ -131,6 +131,10 @@ _DEFAULTS = {
     #   "tail"     -> held-out tail of nyu2_train (paper's 96/4 protocol; DEFAULT)
     #   "official" -> official NYU-v2 654 test set (nyu2_test.csv + *_NYU_test)
     "nyu_test_mode": "tail",
+    # Fraction of the NYU TRAINING POOL held out for validation (checkpoint selection
+    # + early stopping), mirroring how data.make3d splits Train400. Independent of
+    # train_split_ratio, which already carves off the held-out TEST tail.
+    "nyu_val_ratio": 0.05,
     # Seed for the (otherwise non-reproducible) parameter-matrix generation so
     # regenerating betas/atmosphere is idempotent and stays in sync with the GT.
     "random_seed": 42,

@@ -28,6 +28,10 @@ from utils.physics import compute_haze_image, compute_complex_image
 from utils.loss import ssim, gradient_loss
 from utils.tb import make_writer, log_scalars, log_images, log_weights
 
+import warnings
+# Keep the per-epoch output clean: torch/torchvision emit benign deprecation warnings.
+warnings.filterwarnings("ignore")
+
 TECHNIQUE = 2
 VARIANT = 'base'
 DATASET = 'Make3D'
