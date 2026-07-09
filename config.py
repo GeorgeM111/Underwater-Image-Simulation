@@ -35,24 +35,24 @@ except ImportError as exc:  # pragma: no cover - surfaced clearly at runtime
 _DEFAULTS = {
     # Paths
     # ── NYU ──────────────────────────────────────────────────────────────────────
-    "nyu_zip_path": "/datas/sandbox/gmoussa/nyu_data.zip",
-    "nyu_save_dir": "/datas/sandbox/gmoussa/ground_truth/nyu/train",
-    "nyu_gt_test_dir": "/datas/sandbox/gmoussa/ground_truth/nyu/test",
-    "nyu_gt_train_dir": "/datas/sandbox/gmoussa/ground_truth/nyu/train",
+    "nyu_zip_path": "${PROJECT_DATA}/nyu_data.zip",
+    "nyu_save_dir": "${PROJECT_DATA}/ground_truth/nyu/train",
+    "nyu_gt_test_dir": "${PROJECT_DATA}/ground_truth/nyu/test",
+    "nyu_gt_train_dir": "${PROJECT_DATA}/ground_truth/nyu/train",
     # ── Make3D ───────────────────────────────────────────────────────────────────
-    "make3d_train_img_dir": "/datas/sandbox/gmoussa/Make3D/Train400Img",
-    "make3d_train_depth_dir": "/datas/sandbox/gmoussa/Make3D/Train400Depth",
-    "make3d_test_img_dir": "/datas/sandbox/gmoussa/Make3D/Test134",
-    "make3d_test_depth_dir": "/datas/sandbox/gmoussa/Make3D/Test134Depth/Gridlaserdata",
-    "make3d_save_dir": "/datas/sandbox/gmoussa/ground_truth/make3d/train",
-    "make3d_test_save_dir": "/datas/sandbox/gmoussa/ground_truth/make3d/test",
+    "make3d_train_img_dir": "${PROJECT_DATA}/Make3D/Train400Img",
+    "make3d_train_depth_dir": "${PROJECT_DATA}/Make3D/Train400Depth",
+    "make3d_test_img_dir": "${PROJECT_DATA}/Make3D/Test134",
+    "make3d_test_depth_dir": "${PROJECT_DATA}/Make3D/Test134Depth/Gridlaserdata",
+    "make3d_save_dir": "${PROJECT_DATA}/ground_truth/make3d/train",
+    "make3d_test_save_dir": "${PROJECT_DATA}/ground_truth/make3d/test",
     # ── KITTI (raw images + completed/annotated depth PNGs, depth_m = png/256) ──────
-    "kitti_raw_dir": "/datas/sandbox/gmoussa/kitti",
+    "kitti_raw_dir": "${PROJECT_DATA}/kitti",
     # Completed-depth (data_depth_annotated) root, holding train/ and val/ splits:
     #   <dir>/<split>/<drive>/proj_depth/groundtruth/image_02/<frame>.png
-    "kitti_completed_depth_dir": "/datas/sandbox/gmoussa/kitti/completed_depth",
-    "kitti_gt_train_dir": "/datas/sandbox/gmoussa/ground_truth/kitti/train",
-    "kitti_gt_test_dir": "/datas/sandbox/gmoussa/ground_truth/kitti/test",
+    "kitti_completed_depth_dir": "${PROJECT_DATA}/kitti/completed_depth",
+    "kitti_gt_train_dir": "${PROJECT_DATA}/ground_truth/kitti/train",
+    "kitti_gt_test_dir": "${PROJECT_DATA}/ground_truth/kitti/test",
     "kitti_max_depth_m": 80.0,
     # Option B (as for Make3D): KITTI depths reach ~80 m, so scale the per-metre Jerlov
     # beta for the classical haze transmission ONLY (true metric depth kept), else the
@@ -79,22 +79,22 @@ _DEFAULTS = {
     "kitti_subset_indices": None,
     "kitti_test_mode": "tail",
     # Pre-computed KITTI parameter matrices (beta / atmospheric light).
-    "beta_mat_kitti_train": "/datas/sandbox/gmoussa/parameters/Beta_Mat_KITTI_train.npy",
-    "a_mat_kitti_train":    "/datas/sandbox/gmoussa/parameters/A_Mat_KITTI_train.npy",
-    "beta_mat_kitti_test":  "/datas/sandbox/gmoussa/parameters/Beta_Mat_KITTI_test.npy",
-    "a_mat_kitti_test":     "/datas/sandbox/gmoussa/parameters/A_Mat_KITTI_test.npy",
+    "beta_mat_kitti_train": "${PROJECT_DATA}/parameters/Beta_Mat_KITTI_train.npy",
+    "a_mat_kitti_train":    "${PROJECT_DATA}/parameters/A_Mat_KITTI_train.npy",
+    "beta_mat_kitti_test":  "${PROJECT_DATA}/parameters/Beta_Mat_KITTI_test.npy",
+    "a_mat_kitti_test":     "${PROJECT_DATA}/parameters/A_Mat_KITTI_test.npy",
     # ── Parameters ───────────────────────────────────────────────────────────────
-    "beta_mat_nyu_train":    "/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_train.npy",
-    "a_mat_nyu_train":       "/datas/sandbox/gmoussa/parameters/A_Mat_NYU_train.npy",
-    "beta_mat_nyu_test":     "/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_test.npy",
-    "a_mat_nyu_test":        "/datas/sandbox/gmoussa/parameters/A_Mat_NYU_test.npy",
-    "beta_mat_make3d_train": "/datas/sandbox/gmoussa/parameters/Beta_Mat_Make3D_train.npy",
-    "a_mat_make3d_train":    "/datas/sandbox/gmoussa/parameters/A_Mat_Make3D_train.npy",
-    "beta_mat_make3d_test":  "/datas/sandbox/gmoussa/parameters/Beta_Mat_Make3D_test.npy",
-    "a_mat_make3d_test":     "/datas/sandbox/gmoussa/parameters/A_Mat_Make3D_test.npy",
+    "beta_mat_nyu_train":    "${PROJECT_DATA}/parameters/Beta_Mat_NYU_train.npy",
+    "a_mat_nyu_train":       "${PROJECT_DATA}/parameters/A_Mat_NYU_train.npy",
+    "beta_mat_nyu_test":     "${PROJECT_DATA}/parameters/Beta_Mat_NYU_test.npy",
+    "a_mat_nyu_test":        "${PROJECT_DATA}/parameters/A_Mat_NYU_test.npy",
+    "beta_mat_make3d_train": "${PROJECT_DATA}/parameters/Beta_Mat_Make3D_train.npy",
+    "a_mat_make3d_train":    "${PROJECT_DATA}/parameters/A_Mat_Make3D_train.npy",
+    "beta_mat_make3d_test":  "${PROJECT_DATA}/parameters/Beta_Mat_Make3D_test.npy",
+    "a_mat_make3d_test":     "${PROJECT_DATA}/parameters/A_Mat_Make3D_test.npy",
     # ── Outputs ──────────────────────────────────────────────────────────────────
-    "checkpoint_dir": "/datas/sandbox/gmoussa/checkpoints",
-    "runs_dir": "/datas/sandbox/gmoussa/runs",
+    "checkpoint_dir": "${PROJECT_OUT}/checkpoints",
+    "runs_dir": "${PROJECT_OUT}/runs",
     # Training
     "batch_size_nyu": 10,
     "batch_size_make3d": 5,
@@ -260,8 +260,31 @@ class Config(dict):
         self[name] = value
 
 
+# Portable roots. Paths in the config may use ${PROJECT_DATA} (datasets, ground truth,
+# parameter matrices) and ${PROJECT_OUT} (checkpoints, TensorBoard runs). If the env vars
+# are unset we fall back to the original absolute locations, so nothing changes locally.
+# On another machine (e.g. Grid'5000) just export the two variables:
+#     export PROJECT_DATA=$HOME/underwater/data
+#     export PROJECT_OUT=$HOME/underwater/out
+_DEFAULT_PROJECT_DATA = "/datas/sandbox/gmoussa"
+
+
+def _expand(value):
+    """Recursively expand ${VAR} / $VAR / ~ inside strings (lists and dicts too)."""
+    if isinstance(value, str):
+        return os.path.expanduser(os.path.expandvars(value))
+    if isinstance(value, list):
+        return [_expand(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _expand(v) for k, v in value.items()}
+    return value
+
+
 def load_config(path=None):
     """Load configuration, overlaying ``path`` (or ``config.yaml``) on defaults.
+
+    After merging, every string value has ``${VAR}``/``~`` expanded, so the same YAML
+    works on any machine once PROJECT_DATA / PROJECT_OUT are exported.
 
     Parameters
     ----------
@@ -269,13 +292,16 @@ def load_config(path=None):
         Path to a YAML config file. Defaults to ``config.yaml`` next to this
         module. A missing file is tolerated (defaults are used).
     """
+    os.environ.setdefault("PROJECT_DATA", _DEFAULT_PROJECT_DATA)
+    os.environ.setdefault("PROJECT_OUT", os.environ["PROJECT_DATA"])
+
     cfg = dict(_DEFAULTS)
     cfg_path = path or DEFAULT_CONFIG_PATH
     if cfg_path and os.path.exists(cfg_path):
         with open(cfg_path, "r") as handle:
             loaded = yaml.safe_load(handle) or {}
         cfg.update(loaded)
-    return Config(cfg)
+    return Config({k: _expand(v) for k, v in cfg.items()})
 
 
 # Loaded once at import time for convenient `from config import CONFIG` access.

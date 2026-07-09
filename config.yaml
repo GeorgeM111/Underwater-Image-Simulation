@@ -7,24 +7,24 @@
 # =============================================================================
 
 # --- Paths — NYU --------------------------------------------------------------
-nyu_zip_path:      "/datas/sandbox/gmoussa/nyu_data.zip"
-nyu_gt_train_dir:  "/datas/sandbox/gmoussa/ground_truth/nyu/train"
-nyu_gt_test_dir:   "/datas/sandbox/gmoussa/ground_truth/nyu/test"
+nyu_zip_path:      "${PROJECT_DATA}/nyu_data.zip"
+nyu_gt_train_dir:  "${PROJECT_DATA}/ground_truth/nyu/train"
+nyu_gt_test_dir:   "${PROJECT_DATA}/ground_truth/nyu/test"
 
 # --- Paths — Make3D -----------------------------------------------------------
-make3d_train_img_dir:   "/datas/sandbox/gmoussa/Make3D/Train400Img"
-make3d_train_depth_dir: "/datas/sandbox/gmoussa/Make3D/Train400Depth"
-make3d_test_img_dir:    "/datas/sandbox/gmoussa/Make3D/Test134"
-make3d_test_depth_dir:  "/datas/sandbox/gmoussa/Make3D/Test134Depth/Gridlaserdata"
-make3d_gt_train_dir:    "/datas/sandbox/gmoussa/ground_truth/make3d/train"
-make3d_gt_test_dir:     "/datas/sandbox/gmoussa/ground_truth/make3d/test"
+make3d_train_img_dir:   "${PROJECT_DATA}/Make3D/Train400Img"
+make3d_train_depth_dir: "${PROJECT_DATA}/Make3D/Train400Depth"
+make3d_test_img_dir:    "${PROJECT_DATA}/Make3D/Test134"
+make3d_test_depth_dir:  "${PROJECT_DATA}/Make3D/Test134Depth/Gridlaserdata"
+make3d_gt_train_dir:    "${PROJECT_DATA}/ground_truth/make3d/train"
+make3d_gt_test_dir:     "${PROJECT_DATA}/ground_truth/make3d/test"
 
 # --- Paths — KITTI (raw images + completed/annotated depth, depth_m = png/256) ----
-kitti_raw_dir:              "/datas/sandbox/gmoussa/kitti"
+kitti_raw_dir:              "${PROJECT_DATA}/kitti"
 # Completed-depth root with train/ and val/:  <dir>/<split>/<drive>/proj_depth/groundtruth/image_02/<frame>.png
-kitti_completed_depth_dir:  "/datas/sandbox/gmoussa/kitti/completed_depth"
-kitti_gt_train_dir:         "/datas/sandbox/gmoussa/ground_truth/kitti/train"
-kitti_gt_test_dir:          "/datas/sandbox/gmoussa/ground_truth/kitti/test"
+kitti_completed_depth_dir:  "${PROJECT_DATA}/kitti/completed_depth"
+kitti_gt_train_dir:         "${PROJECT_DATA}/ground_truth/kitti/train"
+kitti_gt_test_dir:          "${PROJECT_DATA}/ground_truth/kitti/test"
 kitti_max_depth_m:          80.0
 # Option B: scale per-metre Jerlov beta for the KITTI classical haze (0-80 m depths
 # would otherwise extinguish to flat airlight). 10/80 matches NYU. True depth kept.
@@ -42,24 +42,24 @@ kitti_train_mode:   "subset"    # "subset" -> filtered indices | "all" -> full t
 kitti_subset_indices:           # blank -> auto ({kitti_subset_size}_filtered_kitti.npy)
 kitti_test_mode:    "tail"      # "tail" -> held-out tail of train | "official" -> val split
 # Pre-computed KITTI parameter matrices
-beta_mat_kitti_train: "/datas/sandbox/gmoussa/parameters/Beta_Mat_KITTI_train.npy"
-a_mat_kitti_train:    "/datas/sandbox/gmoussa/parameters/A_Mat_KITTI_train.npy"
-beta_mat_kitti_test:  "/datas/sandbox/gmoussa/parameters/Beta_Mat_KITTI_test.npy"
-a_mat_kitti_test:     "/datas/sandbox/gmoussa/parameters/A_Mat_KITTI_test.npy"
+beta_mat_kitti_train: "${PROJECT_DATA}/parameters/Beta_Mat_KITTI_train.npy"
+a_mat_kitti_train:    "${PROJECT_DATA}/parameters/A_Mat_KITTI_train.npy"
+beta_mat_kitti_test:  "${PROJECT_DATA}/parameters/Beta_Mat_KITTI_test.npy"
+a_mat_kitti_test:     "${PROJECT_DATA}/parameters/A_Mat_KITTI_test.npy"
 
 # --- Paths — Pre-computed parameter matrices ----------------------------------
-beta_mat_nyu_train:    "/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_train.npy"
-beta_mat_nyu_test:     "/datas/sandbox/gmoussa/parameters/Beta_Mat_NYU_test.npy"
-a_mat_nyu_train:       "/datas/sandbox/gmoussa/parameters/A_Mat_NYU_train.npy"
-a_mat_nyu_test:        "/datas/sandbox/gmoussa/parameters/A_Mat_NYU_test.npy"
-beta_mat_make3d_train: "/datas/sandbox/gmoussa/parameters/Beta_Mat_Make_3D_Train.npy"
-beta_mat_make3d_test:  "/datas/sandbox/gmoussa/parameters/Beta_Mat_Make_3D_Test.npy"
-a_mat_make3d_train:    "/datas/sandbox/gmoussa/parameters/A_Mat_Make_3D_Train.npy"
-a_mat_make3d_test:     "/datas/sandbox/gmoussa/parameters/A_Mat_Make_3D_Test.npy"
+beta_mat_nyu_train:    "${PROJECT_DATA}/parameters/Beta_Mat_NYU_train.npy"
+beta_mat_nyu_test:     "${PROJECT_DATA}/parameters/Beta_Mat_NYU_test.npy"
+a_mat_nyu_train:       "${PROJECT_DATA}/parameters/A_Mat_NYU_train.npy"
+a_mat_nyu_test:        "${PROJECT_DATA}/parameters/A_Mat_NYU_test.npy"
+beta_mat_make3d_train: "${PROJECT_DATA}/parameters/Beta_Mat_Make_3D_Train.npy"
+beta_mat_make3d_test:  "${PROJECT_DATA}/parameters/Beta_Mat_Make_3D_Test.npy"
+a_mat_make3d_train:    "${PROJECT_DATA}/parameters/A_Mat_Make_3D_Train.npy"
+a_mat_make3d_test:     "${PROJECT_DATA}/parameters/A_Mat_Make_3D_Test.npy"
 
 # --- Paths — Outputs ----------------------------------------------------------
-checkpoint_dir: "/datas/sandbox/gmoussa/checkpoints"
-runs_dir:       "/datas/sandbox/gmoussa/runs"
+checkpoint_dir: "${PROJECT_OUT}/checkpoints"
+runs_dir:       "${PROJECT_OUT}/runs"
 
 # --- Training -----------------------------------------------------------------
 batch_size_nyu:          32
