@@ -204,10 +204,10 @@ _DEFAULTS = {
     # blur differs only because the CAMERAS differ (focal length) and because a dataset
     # may be simulated under clearer water (clarity). Calibrated so NYU reproduces its
     # previous look (sigma=25.5px at z=10m, f=259.4).
-    "gamma_angular": [0.0098292, 0.0098292, 0.0042266],   # rad / metre, per channel
+    "gamma_angular": [0.0049146, 0.0049146, 0.0021133],   # rad / metre, per channel (halved: sigma=12.8px@10m)
     # Straight-path attenuation k_c = exp(-alpha_metric_c * z_m * clarity). Calibrated
     # from the old 0-255-axis alpha: alpha_metric = alpha * 255 / nyu_max_depth_m.
-    "alpha_metric": [0.816, 0.816, 0.306],                # 1 / metre, per channel
+    "alpha_metric": [0.35, 0.35, 0.15],                   # 1 / metre, per channel (lowered from 0.816: sharp direct light to ~4-5m)
     # Focal length in PIXELS at the GT (half) resolution of each dataset.
     "nyu_focal_px": 259.43,      # NYU-v2 official fx 518.8579 @640 wide -> /2
     "kitti_focal_px": 360.77,    # KITTI P_rect_02 fx ~721.54 @1242 wide; crop keeps f -> /2

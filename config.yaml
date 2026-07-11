@@ -183,8 +183,8 @@ complex_model: "v2"
 # because the CAMERAS differ (focal length) and because a dataset may be simulated under
 # clearer water. "normalized" = the original per-image 0-255 axis (scene-dependent blur).
 complex_depth_mode: "metric"
-gamma_angular: [0.0098292, 0.0098292, 0.0042266]  # rad/m, shared. NYU-calibrated (sigma=25.5px @10m)
-alpha_metric:  [0.816, 0.816, 0.306]              # 1/m, straight-path attenuation
+gamma_angular: [0.0049146, 0.0049146, 0.0021133]  # rad/m, shared. Halved from the 25.5px@10m calib -> sigma=12.8px@10m (moderate haze, less far-field mush)
+alpha_metric:  [0.35, 0.35, 0.15]                 # 1/m, straight-path attenuation. Lowered from 0.816 so sharp direct light survives to ~4-5m instead of ~1.5m
 # Focal length in PIXELS at each dataset's GT (half) resolution
 nyu_focal_px:    259.43   # NYU-v2 official fx 518.8579 @640 -> /2
 kitti_focal_px:  360.77   # KITTI P_rect_02 fx ~721.54 @1242; crop keeps f -> /2
