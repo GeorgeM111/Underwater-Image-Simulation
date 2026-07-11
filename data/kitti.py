@@ -312,7 +312,8 @@ def get_train_loader(config):
         indices = list(range(0, split_idx))
         print("[data.kitti] train mode=all  using full train split (%d frames)" % split_idx)
     return DataLoader(Subset(dataset, indices), batch_size=config.batch_size_make3d,
-                      shuffle=True, num_workers=config.num_workers, drop_last=True)
+                      shuffle=True, num_workers=config.num_workers, drop_last=True,
+                      pin_memory=True, persistent_workers=config.num_workers > 0)
 
 
 def get_val_loader(config):
@@ -324,7 +325,8 @@ def get_val_loader(config):
     split_idx = int(config.train_split_ratio * len(frames))
     val_idx = list(range(split_idx, len(frames)))
     return DataLoader(Subset(dataset, val_idx), batch_size=config.batch_size_make3d,
-                      shuffle=False, num_workers=config.num_workers, drop_last=False)
+                      shuffle=False, num_workers=config.num_workers, drop_last=False,
+                      pin_memory=True, persistent_workers=config.num_workers > 0)
 
 
 def get_test_loader(config):

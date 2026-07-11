@@ -21,6 +21,7 @@ ImageModel:
     k weight heads       → (image, w_0[, w_1, ...])
 """
 
+import torch
 import torch.nn as nn
 
 from config import CONFIG
@@ -28,6 +29,56 @@ from models.encoder import Encoder
 from models.decoder_1ch import Decoder1Ch
 from models.decoder_3ch import Decoder3Ch
 from models.weight_head import WeightTrunk, WeightHeadSigmoid, WeightHeadSoftmax
+
+
+def _floatify(out):
+    """Cast floating outputs back to fp32 (recurse into tuples/lists)."""
+    if torch.is_tensor(out):
+        return out.float() if out.is_floating_point() else out
+    if isinstance(out, (tuple, list)):
+        return type(out)(_floatify(o) for o in out)
+    return out
+
+
+class AmpForward(nn.Module):
+    """Transparently run ``module``'s forward under bf16 autocast while TRAINING.
+
+    Centralises mixed precision so no per-technique train loop needs editing:
+    only the heavy DenseDepth conv/decoder forward runs in bf16 (the H200 win),
+    and every output is cast back to fp32 so the downstream physics, SSIM and
+    gradient losses stay in full precision. In eval() (test.py and the in-loop
+    validation pass) autocast is skipped -> exact fp32 metrics.
+
+    ``state_dict`` / ``load_state_dict`` proxy to the wrapped module, so
+    checkpoints are identical with or without this wrapper (no ``module.`` key
+    prefix, and no collision with DDP's own prefix).
+    """
+
+    def __init__(self, module):
+        super().__init__()
+        self.module = module
+
+    def forward(self, *args, **kwargs):
+        if not (self.training and bool(getattr(CONFIG, 'amp', False))):
+            return self.module(*args, **kwargs)
+        from utils import accel
+        device = next(self.module.parameters()).device
+        with accel.autocast(CONFIG, device):
+            out = self.module(*args, **kwargs)
+        return _floatify(out)
+
+    # Keep checkpoints wrapper-agnostic.
+    def state_dict(self, *args, **kwargs):
+        return self.module.state_dict(*args, **kwargs)
+
+    def load_state_dict(self, *args, **kwargs):
+        return self.module.load_state_dict(*args, **kwargs)
+
+
+def _wrap(*models):
+    """Wrap each non-None model in :class:`AmpForward` (preserves None slots)."""
+    wrapped = tuple(AmpForward(m) if m is not None else None for m in models)
+    return wrapped
 
 
 class DepthModel(nn.Module):
@@ -126,7 +177,7 @@ def build_models(technique, variant):
         model_1 = DepthModel(pretrained)
         model_2 = ImageModel(pretrained)
         model_3 = ImageModel(pretrained) if has_direct else None
-        return model_1, model_2, model_3
+        return _wrap(model_1, model_2, model_3)
 
     if variant == 'var1':
         model_1 = DepthModel(pretrained, sigmoid_n=2)
@@ -139,7 +190,7 @@ def build_models(technique, variant):
         else:
             model_2 = ImageModel(pretrained, head_kind='sigmoid', num_heads=1, head_n=2)
             model_3 = ImageModel(pretrained, head_kind='sigmoid', num_heads=1, head_n=2) if has_direct else None
-        return model_1, model_2, model_3
+        return _wrap(model_1, model_2, model_3)
 
     # variant == 'var2': add a global softmax weighting head on model_1.
     softmax_n = _global_terms(technique)
@@ -150,4 +201,4 @@ def build_models(technique, variant):
     else:
         model_2 = ImageModel(pretrained, head_kind='sigmoid', num_heads=1, head_n=2)
         model_3 = ImageModel(pretrained, head_kind='sigmoid', num_heads=1, head_n=2) if has_direct else None
-    return model_1, model_2, model_3
+    return _wrap(model_1, model_2, model_3)

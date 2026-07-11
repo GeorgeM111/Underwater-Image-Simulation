@@ -231,7 +231,8 @@ def get_train_loader(config):
     print("[data.nyu] train mode=%s  train=%d  val=%d  (pool clipped to [0,%d))"
           % (tag, len(train_idx), len(val_idx), split_idx))
     return DataLoader(Subset(full, train_idx), config.batch_size_nyu, shuffle=True, drop_last=True,
-                      num_workers=config.num_workers)
+                      num_workers=config.num_workers, pin_memory=True,
+                      persistent_workers=config.num_workers > 0)
 
 
 def get_val_loader(config):
@@ -242,7 +243,8 @@ def get_val_loader(config):
     full = _build_full_dataset(config, getNoTransform(), augment=False)
     _, val_idx, _, _ = _train_val_indices(config)
     return DataLoader(Subset(full, val_idx), config.batch_size_nyu, shuffle=False, drop_last=False,
-                      num_workers=config.num_workers)
+                      num_workers=config.num_workers, pin_memory=True,
+                      persistent_workers=config.num_workers > 0)
 
 
 def get_test_loader(config):

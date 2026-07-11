@@ -105,8 +105,12 @@ _DEFAULTS = {
     "gan_learning_rate": 2.0e-4,
     "early_stopping_patience": 5,
     "train_split_ratio": 0.96,
-    "num_workers": 4,
+    "num_workers": 8,
     "n_parallel_jobs": 20,
+    # Acceleration (utils/accel.py): bf16 autocast on the model forwards (H200-friendly).
+    # bf16 needs no GradScaler. amp=False -> exact fp32 path. amp_dtype: bfloat16|float16.
+    "amp": True,
+    "amp_dtype": "bfloat16",
     # Informative-subset selection (filter_nyu_subset.py). Composite score =
     # w_ent*entropy + w_grad*gradient + w_depth*depth_range (each min-max
     # normalised across the dataset). Weights need not sum to 1.
@@ -305,7 +309,15 @@ def load_config(path=None):
         with open(cfg_path, "r") as handle:
             loaded = yaml.safe_load(handle) or {}
         cfg.update(loaded)
-    return Config({k: _expand(v) for k, v in cfg.items()})
+    cfg = Config({k: _expand(v) for k, v in cfg.items()})
+    # Enable TF32 + cuDNN autotuning once, for every script that loads a config.
+    # Safe & numerics-neutral here (kernel selection only); a no-op without CUDA.
+    try:
+        from utils.accel import setup_perf
+        setup_perf(cfg)
+    except Exception:
+        pass  # never let a perf tweak break config loading
+    return cfg
 
 
 # Loaded once at import time for convenient `from config import CONFIG` access.

@@ -73,8 +73,15 @@ gan_learning_rate:       2.0e-4    # canonical Pix2Pix/CycleGAN LR (Isola/Zhu et
                                    # baselines use this instead of the 1e-4 above.
 early_stopping_patience: 5
 train_split_ratio:       0.96
-num_workers:             4
+num_workers:             8     # H200 node has 64 cores; raise for faster data loading (was 4)
 n_parallel_jobs:         6     # for GT pre-computation; each worker loads the full ~5GB NYU zip, so keep low to avoid OOM
+
+# --- Acceleration (see utils/accel.py) ----------------------------------------
+# amp: bf16 autocast on the model forwards. H200 has huge bf16 throughput -> ~1.5-2x
+# and half the activation memory. bf16 needs no GradScaler. Set false for an exact
+# fp32 run (e.g. to byte-match a previous fp32 checkpoint). amp_dtype: bfloat16|float16.
+amp:        true
+amp_dtype:  bfloat16
 
 # --- Informative-subset selection (filter_nyu_subset.py) ----------------------
 # Composite score = w_ent*entropy + w_grad*gradient + w_depth*depth_range,

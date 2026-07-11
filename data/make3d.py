@@ -162,7 +162,8 @@ def get_train_loader(config):
     dataset = _train_dataset(config, augment=True)
     train_idx, _ = _split_indices(len(dataset), config.train_split_ratio)
     return DataLoader(Subset(dataset, train_idx), batch_size=config.batch_size_make3d,
-                      shuffle=True, num_workers=config.num_workers, drop_last=True)
+                      shuffle=True, num_workers=config.num_workers, drop_last=True,
+                      pin_memory=True, persistent_workers=config.num_workers > 0)
 
 
 def get_val_loader(config):
@@ -170,7 +171,8 @@ def get_val_loader(config):
     dataset = _train_dataset(config, augment=False)
     _, val_idx = _split_indices(len(dataset), config.train_split_ratio)
     return DataLoader(Subset(dataset, val_idx), batch_size=config.batch_size_make3d,
-                      shuffle=False, num_workers=config.num_workers, drop_last=False)
+                      shuffle=False, num_workers=config.num_workers, drop_last=False,
+                      pin_memory=True, persistent_workers=config.num_workers > 0)
 
 
 def get_test_loader(config):
