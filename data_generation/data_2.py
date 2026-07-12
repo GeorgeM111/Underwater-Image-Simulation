@@ -178,37 +178,42 @@ class RandomChannelSwap(object):
         return {'image': image, 'depth': depth}
 
 
-def loadZipToMem(zip_file):
-    # Load zip file into memory
+# Per-PROCESS cache of the decompressed NYU archive.
+#
+# The archive is ~4.4 GB and loadZipToMem holds it entirely in RAM. The GT generators call
+# it ONCE PER CHUNK, so without this cache a chunked run re-reads and re-decompresses the
+# whole 4.4 GB for every chunk: at --chunk-size 4 over a 10k subset that is 2500 full reloads
+# and the job looks hung for hours while making almost no progress. data/nyu.py already had
+# this cache; the generator did not.
+#
+# joblib's loky backend uses separate PROCESSES, so each worker still pays exactly one load
+# (which is why n_parallel_jobs must stay small — each worker costs ~4.4 GB of RAM).
+_ZIP_CACHE = {}
+
+
+def _load_zip(zip_file, csv):
+    key = (zip_file, csv)
+    if key in _ZIP_CACHE:
+        return _ZIP_CACHE[key]
     print('Loading dataset zip file...', end='')
     from zipfile import ZipFile
     input_zip = ZipFile(zip_file)
     data = {name: input_zip.read(name) for name in input_zip.namelist()}
     # splitlines(): tolerate CRLF. A stray '\r' on the last field breaks every zip lookup.
-    nyu2_train = list((row.split(',') for row in (data['data/nyu2_train.csv']).decode("utf-8").splitlines()
-                       if len(row) > 0))
+    rows = list((row.split(',') for row in (data[csv]).decode("utf-8").splitlines()
+                 if len(row) > 0))
+    rows = shuffle(rows, random_state=0)
+    print('Loaded ({0}).'.format(len(rows)))
+    _ZIP_CACHE[key] = (data, rows)
+    return _ZIP_CACHE[key]
 
-    nyu2_train = shuffle(nyu2_train, random_state=0)
 
-    #if True: nyu2_train = nyu2_train[:40]
-
-    print('Loaded ({0}).'.format(len(nyu2_train)))
-    return data, nyu2_train
+def loadZipToMem(zip_file):
+    return _load_zip(zip_file, 'data/nyu2_train.csv')
 
 
 def loadZipToMemTest(zip_file):
-    # Load zip file into memory
-    print('Loading dataset zip file...', end='')
-    from zipfile import ZipFile
-    input_zip = ZipFile(zip_file)
-    data = {name: input_zip.read(name) for name in input_zip.namelist()}
-    nyu2_test = list((row.split(',') for row in (data['data/nyu2_test.csv']).decode("utf-8").splitlines()
-                      if len(row) > 0))
-
-    nyu2_test = shuffle(nyu2_test, random_state=0)
-
-    print('Loaded ({0}).'.format(len(nyu2_test)))
-    return data, nyu2_test
+    return _load_zip(zip_file, 'data/nyu2_test.csv')
 
 #GM ------------------------------ BETA AND ATMOSPHERIC LIGHT START -------
 #GM - NYU TRAIN

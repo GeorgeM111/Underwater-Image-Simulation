@@ -71,6 +71,11 @@ def main():
                              "STALE ground truth left over from the previous physics.")
     parser.add_argument('--tail-only', action='store_true',
                         help='Generate ONLY the test tail (skip the training subset).')
+    parser.add_argument('--limit', type=int, default=None,
+                        help='DEBUG: generate only the first N indices, in-process, with the real '
+                             'traceback (joblib re-raises exceptions and hides the failing frame). '
+                             'Use this to reproduce a crash — NOT --jobs 1 --chunk-size 4, which '
+                             'would re-load the 4.4 GB archive once per chunk.')
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -96,16 +101,31 @@ def main():
               "tail will have NO GT from this run. If a GT dir already exists, its tail files "
               "are STALE (previous physics) and test.py will silently score against them.")
 
+    # DEBUG path: run in-process so an exception keeps its real traceback. joblib re-raises
+    # worker exceptions through the parent, which loses the failing frame.
+    if args.limit:
+        indices = indices[:args.limit]
+        print("[--limit] DEBUG: generating %d images IN-PROCESS (no joblib) -> %s"
+              % (len(indices), cfg.nyu_gt_train_dir))
+        t0 = time.time()
+        generate_and_save_haze_image(0, 0, indices=indices)
+        print("Done in %.1fs — no error. The pipeline works on these indices." % (time.time() - t0))
+        return
+
     jobs = args.jobs if args.jobs is not None else cfg.n_parallel_jobs
 
-    # chunk the index list into sublists for the parallel workers
+    # Chunk for the parallel workers. Keep chunks LARGE: generate_and_save_haze_image loads the
+    # (cached, per-process) 4.4 GB archive, so a tiny chunk size means many chunks and — before
+    # the cache existed — a full 4.4 GB reload per chunk. Chunks are the unit of work per call,
+    # not per image; there is no benefit to making them small.
     chunks = [indices[i:i + args.chunk_size] for i in range(0, len(indices), args.chunk_size)]
 
     print("Python :", __import__('sys').version.split()[0], "| Joblib :", joblib.__version__)
     print("Subset indices file :", idx_path)
     print("Generating GT for %d images (%d subset + %d test-tail) -> %s"
           % (len(indices), n_subset, n_tail, cfg.nyu_gt_train_dir))
-    print("Chunks: %d (size <= %d)  |  jobs: %d" % (len(chunks), args.chunk_size, jobs))
+    print("Chunks: %d (size <= %d)  |  jobs: %d  (each worker holds ~4.4 GB: the archive)"
+          % (len(chunks), args.chunk_size, jobs))
 
     t0 = time.time()
     with Parallel(n_jobs=jobs) as parallel:
