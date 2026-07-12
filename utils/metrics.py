@@ -1,26 +1,40 @@
-"""Evaluation metrics: NYU-style depth/image error metrics."""
+"""Evaluation metrics for the simulated (complex) IMAGE.
+
+NaN POLICY (single, uniform, loud):
+    Nothing in this module hides a non-finite value. No ``nanmean``, no
+    ``isfinite`` skip, no ``sys.exit``. If the model emits NaN/Inf, the metric
+    comes out NaN and the CALLER is responsible for reporting it. Previously four
+    different NaN policies coexisted in one 9-metric row, so a broken model could
+    print a table with no visible anomaly (abs_rel/rmse/log10 -> 0.0000 = perfect,
+    while mae/psnr/ssim still looked plausible).
+
+Note on the metric set: per the paper (p.12), abs_rel/rmse/log10/delta are computed
+between the ground-truth and predicted IMAGE, not depth. They are ratio/log metrics
+borrowed from the depth literature; on [0,1] images they misbehave on dark pixels,
+so MAE/PSNR/SSIM are reported alongside as the honest image-quality signal.
+"""
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 
 def psnr(pred, target, max_val=1.0):
-    """Peak signal-to-noise ratio (dB) for images in [0, max_val]."""
+    """Peak signal-to-noise ratio (dB) for images in [0, max_val].
+
+    The mse is floored instead of returning +inf for a perfect match: an infinite
+    PSNR is not finite, so a caller filtering on ``isfinite`` would have DROPPED a
+    perfect reconstruction (and, with a zero-initialised meter, printed psnr 0.0000
+    — the worst possible value — for the best possible model).
+    """
     mse = torch.mean((pred.clamp(0, max_val) - target.clamp(0, max_val)) ** 2)
-    if mse.item() == 0:
-        return torch.tensor(float('inf'), device=pred.device)
+    mse = mse.clamp(min=1e-12)
     return 10.0 * torch.log10((max_val ** 2) / mse)
 
 
 def image_quality(gt_image, pred_image, border_crop_size=16):
-    """Perceptually meaningful metrics for the simulated (complex) IMAGE: MAE, PSNR, SSIM.
+    """Perceptually meaningful metrics for the simulated IMAGE: MAE, PSNR, SSIM.
 
-    Why this exists: the reported abs_rel / log10 / delta metrics are DEPTH-ratio
-    metrics (thresh = max(y/x, x/y), |y-x|/y, log10). On RGB images in [0,1] they
-    blow up on dark pixels (y -> 0), so a visually excellent simulated image can
-    score terribly. MAE/PSNR/SSIM are bounded and track how good the image
-    actually looks, so 'amazing predictions' get good numbers.
+    Scores the SAME pixel region as :func:`add_results_1` (both crop
+    ``border_crop_size // 2`` from each side and score what remains).
     """
     from utils.loss import ssim  # local import avoids any import-time coupling
     hb = border_crop_size // 2
@@ -33,11 +47,13 @@ def image_quality(gt_image, pred_image, border_crop_size=16):
 
 
 def compute_errors_nyu(pred, gt, eps=1e-3):
-    # These are ratio/log metrics designed for positive DEPTH. On [0,1] IMAGES with
-    # dark/zero pixels, y/x and log10(x) blow up to inf/NaN -> the caller's
-    # `if torch.isfinite(v)` then SKIPS the batch, so the meter reads a spurious 0
-    # (the classic "log10 is always 0"). Flooring to a small positive eps keeps every
-    # term finite; for real depth (10..1000) the floor is negligible.
+    """Ratio/log error metrics.
+
+    The eps floor keeps FINITE-but-extreme inputs finite (y/x and log10(x) blow up
+    as y -> 0 on dark image pixels). It does NOT sanitise NaN — ``torch.clamp``
+    PROPAGATES NaN — and that is deliberate: a NaN prediction must surface as a NaN
+    metric, not be silently laundered into a good-looking number.
+    """
     y = gt.clamp(min=eps)
     x = pred.clamp(min=eps)
     thresh = torch.max((y / x), (x / y))
@@ -45,72 +61,32 @@ def compute_errors_nyu(pred, gt, eps=1e-3):
     a2 = (thresh < 1.25 ** 2).float().mean()
     a3 = (thresh < 1.25 ** 3).float().mean()
     abs_rel = torch.mean(torch.abs(y - x) / y)
-    rmse = (y - x) ** 2
-    rmse = torch.sqrt(rmse.mean())
-    log_10 = (torch.abs(torch.log10(y) - torch.log10(x))).nanmean()
-    return abs_rel, rmse, log_10, a1, a2, a3
-
-
-def add_results(gt_image, pred_image, border_crop_size=16):
-    predictions = []
-    testSetDepths = []
-    gt_image_border_cut = gt_image[:, :, border_crop_size:-border_crop_size, border_crop_size:-border_crop_size]
-    pred_image_border_cut = pred_image[:, :, border_crop_size:-border_crop_size, border_crop_size:-border_crop_size]
-
-    del gt_image, pred_image
-
-    for j in range(len(gt_image_border_cut)):
-        predictions.append(pred_image_border_cut[j])
-        testSetDepths.append(gt_image_border_cut[j])
-
-    predictions = torch.stack(predictions, axis=0)
-    testSetDepths = torch.stack(testSetDepths, axis=0)
-
-    del pred_image_border_cut, gt_image_border_cut
-    abs_rel, rmse, log_10, a1, a2, a3 = compute_errors_nyu(predictions, testSetDepths)
-
-    del predictions, testSetDepths
-
+    rmse = torch.sqrt(((y - x) ** 2).mean())
+    log_10 = (torch.abs(torch.log10(y) - torch.log10(x))).mean()
     return abs_rel, rmse, log_10, a1, a2, a3
 
 
 def add_results_1(gt_image, pred_image, border_crop_size=16, use_224=False, target_size=None):
-    """Border-crop, then compute error metrics.
+    """Border-crop, then compute the ratio/log error metrics.
+
+    The border crop removes the reconstruction ring at the image edge. The previous
+    implementation cropped and then ``ReplicationPad2d``-ed the border straight back,
+    which (a) defeated the crop and (b) replicated the surviving edge ring over the
+    padded band so those pixels were counted ~9x and their error amplified ~9x in
+    abs_rel/rmse. It also meant this function scored a DIFFERENT pixel set than
+    ``image_quality`` in the same results row. The crop is now final.
 
     ``target_size`` (H, W): if given, both images are resized to it before scoring.
-    Default ``None`` => evaluate at the data's NATIVE resolution. The old code
-    hard-coded a resize to (480, 640) (NYU's full res) for BOTH datasets, which
-    upsampled Make3D's native 173x230 ~2.7x, magnifying its coarse laser-derived
-    GT and the smooth-pred/blocky-GT mismatch. Native-resolution evaluation keeps
-    prediction and GT on the same, honest grid.
+    Default ``None`` => evaluate at the data's NATIVE resolution. (Old code hard-coded
+    a resize to NYU's (480, 640) for BOTH datasets, upsampling Make3D ~2.7x.)
     """
-    predictions = []
-    testSetDepths = []
-    half_border_size = border_crop_size // 2
-
-    gt_image_border_cut = gt_image[:, :, half_border_size:-half_border_size, half_border_size:-half_border_size]
-    pred_image_border_cut = pred_image[:, :, half_border_size:-half_border_size, half_border_size:-half_border_size]
-
-    del gt_image, pred_image
-
-    replicate = nn.ReplicationPad2d(half_border_size)
-    gt_image_border_cut = replicate(gt_image_border_cut)
-    pred_image_border_cut = replicate(pred_image_border_cut)
+    hb = border_crop_size // 2
+    gt = gt_image[:, :, hb:-hb, hb:-hb]
+    pred = pred_image[:, :, hb:-hb, hb:-hb]
 
     if target_size is not None:
-        gt_image_border_cut = F.interpolate(gt_image_border_cut, target_size, mode='bilinear', align_corners=True)
-        pred_image_border_cut = F.interpolate(pred_image_border_cut, target_size, mode='bilinear', align_corners=True)
+        import torch.nn.functional as F
+        gt = F.interpolate(gt, target_size, mode='bilinear', align_corners=True)
+        pred = F.interpolate(pred, target_size, mode='bilinear', align_corners=True)
 
-    for j in range(len(gt_image_border_cut)):
-        predictions.append(pred_image_border_cut[j])
-        testSetDepths.append(gt_image_border_cut[j])
-
-    predictions = torch.stack(predictions, axis=0)
-    testSetDepths = torch.stack(testSetDepths, axis=0)
-
-    del pred_image_border_cut, gt_image_border_cut
-    abs_rel, rmse, log_10, a1, a2, a3 = compute_errors_nyu(predictions, testSetDepths)
-
-    del predictions, testSetDepths
-
-    return abs_rel, rmse, log_10, a1, a2, a3
+    return compute_errors_nyu(pred, gt)

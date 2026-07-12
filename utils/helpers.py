@@ -16,20 +16,28 @@ def DepthNorm(depth, maxDepth=None):
 
 
 class AverageMeter(object):
+    """Running mean.
+
+    ``avg`` starts as NaN, NOT 0. A meter that never receives an update means
+    "no measurement", and for the lower-is-better metrics (abs_rel/rmse/log10/mae)
+    a 0 would read as a PERFECT score. That is exactly how a fully-diverged model
+    used to print ``abs_rel 0.0000``. NaN is loud; 0 is a lie.
+    """
+
     def __init__(self):
         self.reset()
 
     def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
+        self.val = float('nan')
+        self.avg = float('nan')
+        self.sum = 0.0
         self.count = 0
 
     def update(self, val, n=1):
         self.val = val
         self.sum += val * n
         self.count += n
-        self.avg = self.sum / self.count
+        self.avg = self.sum / self.count if self.count > 0 else float('nan')
 
 
 def colorize(value, vmin=10, vmax=1000, cmap='plasma'):

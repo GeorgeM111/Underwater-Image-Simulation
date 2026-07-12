@@ -118,15 +118,41 @@ nyu_val_ratio:      0.05
 random_seed:        42
 
 # --- Loss weights -------------------------------------------------------------
+# Paper Eq.7/10/14/18 fix all four lambdas at 0.1 (base variants).
 lambda_l1:   0.1
 lambda_ssim: 0.1
-lambda_perc: 0.1
-# Depth-branch supervision. The depth term must NOT be ~10x smaller than the
-# image-reconstruction term or the network only fits the (image) target and
-# leaves depth blurry. lambda_grad adds the DenseDepth edge/gradient term that
-# preserves high-frequency depth detail (missing in the original loss).
-lambda_depth: 1.0
-lambda_grad:  1.0
+lambda_perc: 0.1   # Technique 4 only (VGG perceptual term)
+lambda_grad: 1.0   # DenseDepth edge/gradient term on depth (not in the paper; keeps depth sharp)
+
+# --- Learned loss weights (var1 / var2) ---------------------------------------
+# The paper's Eq.12/13/17/21 learn the loss weights with NO regulariser. That objective is
+# LINEAR in w, so its exact minimiser is a VERTEX (one-hot on argmin_i L_i) and there is no
+# restoring force: as w -> 0 the term stops getting gradient, stays large, and the sign
+# never flips. Every var2 run collapsed this way — the depth head, whose only gradient path
+# is L_depth, froze at init and the physics degenerated to flat airlight (gray/white frames).
+#
+# Three independent mechanisms are needed; none alone is sufficient:
+#   weight_floor        -- no weight may fall below this (removes the vertex)
+#   lambda_weight_reg   -- log-barrier -sum(log w) added to the TRAINING total
+#   loss_ema_momentum   -- EMA scale-normalisation so terms in different units compete fairly
+#                          (loss_depth is O(1-10) in the reciprocal domain; the image losses
+#                           are O(0.1-0.5), so loss_depth was never the argmin)
+# Set weight_floor: 0.0 and lambda_weight_reg: 0.0 to reproduce the paper exactly.
+weight_floor:       0.05
+lambda_weight_reg:  0.01
+loss_ema_momentum:  0.99
+# Paper's supplementary puts Dropout(0.5) at every stage of the weight head. That head maps
+# a 256-d pooled vector to 2-4 scalars (nothing to regularise) and the weights are
+# MULTIPLICATIVE on the losses, so dropout noise there noises every gradient in the network.
+# It also makes E_train[w] != w_eval, so the train objective and the val/checkpoint objective
+# are different functions. Set to 0.5 to restore the paper's value.
+weight_head_dropout: 0.1
+
+# --- Optimisation stability ---------------------------------------------------
+grad_clip_norm:      1.0     # global-norm clip between backward() and step(); 0 disables
+weight_head_lr_mult: 0.1     # weight heads emit MULTIPLICATIVE scalars -> train them slower
+lr_min:              1.0e-6  # cosine-annealing floor
+max_nonfinite_batches_per_epoch: 50  # abort the epoch if the loss is non-finite this often
 
 # --- Physics — classical model (Jerlov, per-metre) ----------------------------
 # IMPORTANT: in water RED is attenuated the MOST and blue/green the least
@@ -183,8 +209,48 @@ complex_model: "v2"
 # because the CAMERAS differ (focal length) and because a dataset may be simulated under
 # clearer water. "normalized" = the original per-image 0-255 axis (scene-dependent blur).
 complex_depth_mode: "metric"
-gamma_angular: [0.0049146, 0.0049146, 0.0021133]  # rad/m, shared. Halved from the 25.5px@10m calib -> sigma=12.8px@10m (moderate haze, less far-field mush)
-alpha_metric:  [0.35, 0.35, 0.15]                 # 1/m, straight-path attenuation. Lowered from 0.816 so sharp direct light survives to ~4-5m instead of ~1.5m
+#
+# WHY THESE ARE NEARLY FLAT ACROSS RGB (this is the "blue filter" fix).
+#
+# The v2 model is energy-conserving, so mean(complex_GT) == u * mean(haze_GT) at every
+# depth BY CONSTRUCTION. The colour cast comes entirely from t = exp(-beta*z) and the
+# red-depleted airlight — and that exact cast is ALREADY in the classical haze GT. So the
+# complex model's only two differentiators are (a) forward-scatter blur and (b) particles.
+#
+# Both used to be switched off in the channel that matters. The old values were inherited
+# from the legacy 0-255-axis constants (gamma: [0.1, 0.1, 0.043], B/R = 0.43) and were
+# never re-derived on the metric axis, so BLUE — the channel that TRANSMITS (Jerlov
+# beta_B ~ 0.05/m => t_B(2m) = 0.90) and therefore carries essentially all the visible
+# scene structure — got the NARROWEST PSF and the LEAST scattering in the whole config
+# (43% of red). Red was heavily blurred, but red is extinguished by t_R and replaced by
+# airlight, so its blur was invisible. Net result: a SHARP original under a blue-green
+# tint. That is exactly the "it's just a blue filter on the original" symptom.
+#
+# gamma_angular: the forward-scatter lobe width is set by particle size / diffraction
+# (theta ~ lambda/D), so the R:B ratio should be ~1.44 at most, not 2.33. Flattened, with
+# blue nudged slightly WIDER since blue is the surviving channel. Note gamma_eff =
+# 259.43 * gamma = [1.09, 1.17, 1.25] px/m — every channel is now at or BELOW the old
+# R/G value of 1.275 px/m, so nothing gets blurrier in radius than before. The blur simply
+# lands where it can be seen.
+#
+# alpha_metric: the volume scattering coefficient of water is Rayleigh (~lambda^-4) plus a
+# wavelength-neutral particulate term, so b_blue >= b_green >= b_red. The old config had
+# this exactly BACKWARDS. Mean level 0.50 sits between the invisible 0.283 and the
+# over-blurred 0.816 that produced the far-field mush.
+#
+# Predicted (NYU, f=259.43 px, clarity=1.0):
+#   z= 2 m: sigma_px 2.18/2.33/2.49   scattered fraction (1-k) 0.59/0.63/0.67
+#   z= 5 m: sigma_px 5.45/5.84/6.23   scattered fraction        0.90/0.92/0.94
+#   z=10 m: sigma_px 10.9/11.7/12.5   scattered fraction        0.99/0.99/1.00
+# (vs the rejected "too blurry" setting whose sigma_R hit 25.5 px @10 m.)
+#
+# NOTE: alpha is NOT bounded by beta. jerlov_water_types holds DIFFUSE attenuation
+# coefficients K_d, not the beam attenuation c = a + b; in real water c ~ 3-10x K_d, so the
+# scattering coefficient legitimately exceeds these betas. Forcing alpha <= beta would
+# drive k -> 1, kill the scatter term, and collapse the complex GT onto the classical haze
+# GT — i.e. a PURE blue filter, strictly worse.
+gamma_angular: [0.0042, 0.0045, 0.0048]  # rad/m — near-flat, blue slightly wider
+alpha_metric:  [0.45,   0.50,   0.55  ]  # 1/m   — scattered fraction; blue-heavy (Rayleigh)
 # Focal length in PIXELS at each dataset's GT (half) resolution
 nyu_focal_px:    259.43   # NYU-v2 official fx 518.8579 @640 -> /2
 kitti_focal_px:  360.77   # KITTI P_rect_02 fx ~721.54 @1242; crop keeps f -> /2
@@ -196,18 +262,38 @@ make3d_focal_px: 246.60   # Make3D ships NO intrinsics -> assumed 50 deg HFOV @2
 nyu_water_clarity:    1.0
 make3d_water_clarity: 0.125
 kitti_water_clarity:  0.125
-# legacy 0-255-axis coefficients (used only when complex_depth_mode: "normalized")
-gamma:        [0.1, 0.1, 0.043]
-alpha:        [0.032, 0.032, 0.012]
+# --- Eq.6 particle field (LIVE on the v2/metric path) -------------------------
+# Eq.6: I = u*I_sct + (1-u)*SP{sp_col, pr_c, sigma_c}
+#
+# These were effectively OFF. At u=0.99 the particle term contributed a mean of
+# [0.05, 0.30, 0.30] gray levels with std 0.14 — BELOW one 8-bit LSB, i.e. invisible.
+# And pr=0.15 seeds 15% of ALL pixels, which after a sigma=1.5 blur is a smooth
+# low-contrast VEIL, not marine snow. So Eq.6 cost three Gaussian blurs per image and
+# delivered a +-1-LSB dither.
+#
+# Now: sparse (1%), bright, near-white, ~1 px cores.
+#   isolated particle peak = turbu_c/(2*pi*sigma^2) * (1-u) ~ 4.6 gray levels (clusters 8-12)
+#   DC tint                = pr * turbu_c * (1-u)           ~ 0.24 gray levels (no cyan veil)
+# Side effect of u=0.90: Eq.6 is a CONVEX mix, so I_sct is also scaled by 0.90 — the GT
+# darkens ~10%. That is what Eq.6 prescribes. For less darkening use u: 0.95 with
+# turbu_c: [245, 255, 255] and turbu_sigma: [0.8, 0.8, 0.8].
+u:            0.90                 # Eq.6 mixing weight (was 0.99 -> particles invisible)
+turbu_c:      [200.0, 235.0, 240.0]  # sp_col: bright near-white marine snow (was [34,200,201])
+turbu_pr:     [0.010, 0.010, 0.010]  # Eq.6 pr_c: 1% seed density (was 0.15 -> a veil)
+turbu_sigma:  [0.9, 0.9, 0.9]        # Eq.6 sigma_c: ~1 px particle core (was 1.5)
+depth_levels: 16                     # depth quantisation bins for the scattering PSF
+
+# --- Legacy 0-255-axis coefficients (DEAD unless complex_depth_mode: "normalized") ---
+# Fenced off deliberately: `gamma` sits a few lines from `gamma_angular` with a nearly
+# identical name and editing the wrong one produces BYTE-IDENTICAL GT with no error.
+gamma:        [0.1, 0.1, 0.043]    # (normalized only) -- NOT gamma_angular
+alpha:        [0.032, 0.032, 0.012]# (normalized only) -- NOT alpha_metric
 turbu_p:      [0.15, 1.5]          # (ricardo only) [density, blur sigma]
-turbu_c:      [34.0, 200.0, 201.0] # sp_col: base particle colour per channel
-turbu_pr:     [0.15, 0.15, 0.15]   # (v2) Eq.6 pr_c: probability of a particle, per channel
-turbu_sigma:  [1.5, 1.5, 1.5]      # (v2) Eq.6 sigma_c: blur deviation, per channel
-u:            0.99
 s:            2                    # (ricardo only) stray SP multiplier; v2 follows Eq.6 exactly
-depth_add:    0
-depth_levels: 16
-kern_size:    10
+kern_size:    10                   # (ricardo only) fixed kernel half-size
+depth_add:    0                    # (normalized only) additive minimum depth. NEVER set this
+                                   # on the metric axis -- it would add whole METRES of water
+                                   # to every pixel. Confined to the normalized branch.
 
 # --- Depth --------------------------------------------------------------------
 nyu_max_depth_m:    10.0

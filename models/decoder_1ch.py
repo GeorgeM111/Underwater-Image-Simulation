@@ -23,9 +23,33 @@ class UpSample(nn.Sequential):
 
 
 class Decoder1Ch(nn.Module):
-    """Decoder producing a single-channel (depth) output."""
+    """Decoder producing a single-channel depth output in the reciprocal (DepthNorm) domain.
 
-    def __init__(self, num_features=1664, decoder_width=1.0):
+    The output is squashed into ``[y_min, y_max]`` by a SCALED SIGMOID. This is the fix
+    for the "flat gray/white screen" collapse.
+
+    Why it is needed. The head regresses ``y = DepthNorm(z) = depth_norm_max / d``, and
+    the physics recovers metres as ``z = max_depth_m / y``. With a bare Conv2d the output
+    is unbounded in (-inf, +inf) while its target lives in [1, 25], so ``z(y)`` is a
+    HYPERBOLA in the raw output with three pathological regimes:
+      (i)   an exploding band around y ~ 0.05-0.5, where dz/dy is ~300x its healthy value;
+      (ii)  a dead zone at y < 0.02 (z > 500 m => t = exp(-beta*z) = 0), where the haze
+            image degenerates to PURE AIRLIGHT — a flat, uniform, water-tinted frame;
+      (iii) an ABSORBING STATE at y <= 0, where ``depthnorm_to_metres``'s
+            ``torch.clamp(y, min=eps)`` has a backward of EXACTLY 0, so once the head
+            crosses zero it can never come back. The collapse is permanent.
+
+    Why sigmoid and NOT clamp/ReLU: a hard clamp or ReLU also has exactly-zero gradient
+    outside its range, so it would merely RELOCATE the absorbing state rather than remove
+    it. The scaled sigmoid makes all three regimes unreachable by construction and its
+    derivative is never exactly zero, so the head can always recover.
+
+    Bounds: y in [1, 25] corresponds to z in [max_depth_m/25, max_depth_m/1] = [0.4, 10] m
+    for NYU — exactly the paper's supplementary clip ("target depth maps are clipped to
+    the range [0.4, 10] in meters").
+    """
+
+    def __init__(self, num_features=1664, decoder_width=1.0, y_min=1.0, y_max=25.0):
         super(Decoder1Ch, self).__init__()
         features = int(num_features * decoder_width)
 
@@ -38,6 +62,9 @@ class Decoder1Ch(nn.Module):
 
         self.conv3 = nn.Conv2d(features // 16, 1, kernel_size=3, stride=1, padding=1)
 
+        self.y_min = float(y_min)
+        self.y_max = float(y_max)
+
     def forward(self, features):
         x_block0, x_block1, x_block2, x_block3, x_block4 = (
             features[3], features[4], features[6], features[8], features[12])
@@ -47,4 +74,5 @@ class Decoder1Ch(nn.Module):
         x_d2 = self.up2(x_d1, x_block2)
         x_d3 = self.up3(x_d2, x_block1)
         x_d4 = self.up4(x_d3, x_block0)
-        return self.conv3(x_d4)
+        raw = self.conv3(x_d4)
+        return self.y_min + (self.y_max - self.y_min) * torch.sigmoid(raw)

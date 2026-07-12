@@ -19,6 +19,12 @@ from PIL import Image
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 
+# The depth axis lives in utils/depth_range.py (dependency-free) so the transforms, the GT
+# generator, the physics and the model head all agree. Four copies of this clamp used to
+# exist independently; they would have drifted.
+from utils.depth_range import (DEPTH_CLAMP_MIN, DEPTH_CLAMP_MAX, DEPTH_NORM_MIN,
+                               DEPTH_NORM_MAX, DEPTH_CLIP_FRAC, DEPTH_VAL_RANGE)
+
 
 def _is_pil_image(img):
     return isinstance(img, Image.Image)
@@ -86,8 +92,13 @@ class ToTensor(object):
     def __call__(self, sample):
         image, depth = sample['image'], sample['depth']
 
-        image_half = image.resize((320, 240))
-        depth_half = depth.resize((320, 240))
+        image_half = image.resize((320, 240), resample=Image.BICUBIC)
+        # NEAREST for depth. PIL's default for mode-L is BICUBIC, which OVERSHOOTS at
+        # depth discontinuities and invents depths present in neither the foreground nor
+        # the background. It also perturbs depth.min()/max(), which the GT generator uses
+        # to place all 16 scattering bin edges — so a resampling artefact shifted the PSF
+        # sigma quantisation across the whole image.
+        depth_half = depth.resize((320, 240), resample=Image.NEAREST)
 
         image_half_norm_0_1 = self.to_tensor(image_half).float()
         image_norm_0_1 = self.to_tensor(image).float()
@@ -95,10 +106,17 @@ class ToTensor(object):
 
         # Train and test use the SAME depth scaling. The old is_test branch divided
         # by 1000, which (with a [0,1] source depth) collapsed every test depth to
-        # the clamp floor of 10 -> a degenerate constant depth map. Depth is the
-        # same 8-bit source in both cases, so both use *1000 -> [10, 1000].
+        # the clamp floor -> a degenerate constant depth map.
+        #
+        # Clamp floor is 40, NOT 10. The paper's supplementary clips target depth maps to
+        # [0.4, 10] m. On this axis d = z_metres * 100, so z >= 0.4 m <=> d >= 40, giving
+        # the reciprocal target y = DepthNorm(d) = 1000/d in [1, 25] — exactly the range
+        # the depth head (models/decoder_1ch.py) is now bounded to. The old floor of 10
+        # allowed z down to 0.1 m => y up to 100, a 4x wider range than the paper's, and
+        # it let near-zero/missing depth pixels through into the physics.
         depth_half_norm_10_1000 = self.to_tensor(depth_half).float() * 1000
-        depth_half_norm_10_1000 = torch.clamp(depth_half_norm_10_1000, 10, 1000)
+        depth_half_norm_10_1000 = torch.clamp(depth_half_norm_10_1000,
+                                              DEPTH_CLAMP_MIN, DEPTH_CLAMP_MAX)
         return {'image_norm': image_norm_0_1, 'image_half_norm': image_half_norm_0_1,
                 'depth_half_norm_10_1000': depth_half_norm_10_1000, 'depth_half_norm_0_1': depth_half_0_1}
 

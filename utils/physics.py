@@ -25,31 +25,48 @@ from PIL import Image
 from sklearn.utils import shuffle
 
 from config import CONFIG
+from utils.depth_range import DEPTH_NORM_MIN, DEPTH_CLIP_FRAC
+
+# The reciprocal-depth cancellation z = max_depth_m / out_depth is only valid because
+# depth_norm_max equals the 1000 that utils/transforms.py multiplies the 8-bit depth by.
+# If someone changes depth_norm_max alone, every recovered z silently rescales.
+assert float(CONFIG.depth_norm_max) == 1000.0, (
+    "depth_norm_max must be 1000.0 to match the depth transform's *1000 scaling; "
+    "got %r. Changing it alone would silently rescale every recovered depth in metres."
+    % (CONFIG.depth_norm_max,))
 
 
 # =============================================================================
 # Tensor image-formation helpers (used inside the training loops)
 # =============================================================================
 
-def depthnorm_to_metres(output_depth, max_depth_m, depth_norm_max=None, eps=1e-6):
+def depthnorm_to_metres(output_depth, max_depth_m, depth_norm_max=None, eps=None):
     """Convert a network depth prediction back to METRES.
 
     The depth head regresses ``DepthNorm(d) = depth_norm_max / d_target`` (a
-    reciprocal-domain value, roughly 1..100), NOT metres. The classical haze GT,
-    however, was generated with ``t = exp(-beta * z)`` where ``z`` is in metres.
-    If the training loop feeds the raw (reciprocal-domain) prediction straight
-    into ``exp(-beta * z)`` it uses a depth scale ~10x off from the GT, forcing
-    the residual/depth to compensate and distorting both colour and depth. This
-    converts the prediction back to metres so the physics matches GT generation:
+    reciprocal-domain value in [1, 25]), NOT metres. The GT was generated with
+    ``t = exp(-beta * z)`` where ``z`` is in metres, so the prediction must be mapped
+    back before it meets the physics:
 
-        d_target = depth_norm_max / output_depth          (∈ [10, depth_norm_max])
-        z_metres = d_target / depth_norm_max * max_depth_m = max_depth_m / output_depth
+        z_metres = max_depth_m / output_depth
+
+    (This cancellation holds only because ``depth_norm_max`` equals the 1000 hard-coded
+    in the depth transforms; the assert below pins that invariant. Changing
+    ``depth_norm_max`` alone would silently rescale every recovered z.)
+
+    The floor is now DEPTH_NORM_MIN (=1.0), not 1e-6. The depth head is bounded to
+    [1, 25] by a scaled sigmoid (models/decoder_1ch.py), so this clamp should never
+    bind — it is a guard, not a mechanism. The old 1e-6 floor was an ABSORBING STATE:
+    ``torch.clamp``'s backward is exactly 0 below the floor, so once the (then unbounded)
+    head emitted a non-positive value it could never recover, z jumped to 1e7 m, t
+    collapsed to 0, and the haze image degenerated to pure airlight — the flat gray/white
+    frames. Keeping a floor at the *physical* minimum means even a clamp event leaves the
+    prediction inside the valid range instead of at a degenerate one.
     """
     if depth_norm_max is None:
         depth_norm_max = CONFIG.depth_norm_max
-    # Depth is physically non-negative; the network can emit small/negative values
-    # early in training, so clamp to a positive floor to keep z (and exp(-beta*z))
-    # finite instead of overflowing to Inf -> NaN.
+    if eps is None:
+        eps = DEPTH_NORM_MIN
     return max_depth_m / torch.clamp(output_depth, min=eps)
 
 
@@ -93,22 +110,37 @@ def compute_complex_image(output_depth, output_black_box, beta_val, a_mat, unit_
 # Ricardo underwater image-formation model (numpy / ground-truth generation)
 # =============================================================================
 
-# --- Parameters (from config.yaml) ---------------------------------------------
-gamma = list(CONFIG.gamma)          # scattering kernel width per channel R-G-B
-alpha = list(CONFIG.alpha)          # direct-path attenuation per channel RGB
-# complex_beta is the ricardo-model transmission coefficient — SEPARATE from the
-# classical Jerlov beta_val. This model runs on a per-image 0-255 normalised
-# depth axis, so it needs the small ricardo coefficients. The per-metre Jerlov
-# betas would make exp(-beta*z) (z up to 255) ~0 and collapse every complex GT
-# image to a flat gray atmospheric-light frame.
-complex_beta = list(CONFIG.complex_beta)
-turbu_p = list(CONFIG.turbu_p)      # [noise amount, gaussian std-dev]
-turbu_c = list(CONFIG.turbu_c)      # particle colour per channel RGB
-u = CONFIG.u                        # scattering+attenuation vs particle-noise weighting
-s = CONFIG.s                        # multiplier for the particle-noise image
-depth_add = CONFIG.depth_add        # additive minimum distance for the depth map
-depth_levels = CONFIG.depth_levels  # depth quantisation bins for scattering
-kern_size = CONFIG.kern_size        # scattering kernel half-size
+# --- Parameters -----------------------------------------------------------------
+# READ AT CALL TIME, never bound at import. These used to be module-level constants
+# evaluated on `import utils.physics`, which meant `--config myexp.yaml` did NOTHING to
+# the physics: the names were already frozen from the repo-root config.yaml singleton and
+# load_config() returns a fresh object without mutating it. Worse, the GT scripts DO
+# honour --config for the output directory, so an experiment YAML would print one path
+# and write baseline-physics GT into it.
+#
+# `cfg` is threaded explicitly (and defaults to the singleton) so it also survives joblib's
+# loky backend, which spawns fresh processes that re-import config and would otherwise
+# each rebuild CONFIG from the DEFAULT path — leaving the parent right and every worker
+# wrong. A cfg object pickles; a mutated module global does not travel.
+def _phys(cfg=None):
+    """Snapshot of the physics parameters for one call."""
+    c = cfg if cfg is not None else CONFIG
+    return {
+        'gamma': list(c.gamma),                  # legacy 0-255-axis kernel width (RGB)
+        'alpha': list(c.alpha),                  # legacy 0-255-axis direct-path attenuation
+        'complex_beta': list(c.complex_beta),    # legacy ricardo transmission coefficient
+        'turbu_p': list(c.turbu_p),              # legacy [noise amount, gaussian std]
+        'turbu_c': list(c.turbu_c),              # particle colour per channel (LIVE on v2)
+        'turbu_pr': list(c.turbu_pr),            # per-channel particle probability (LIVE)
+        'turbu_sigma': list(c.turbu_sigma),      # per-channel particle blur sigma (LIVE)
+        'u': float(c.u),                         # Eq.6 mixing weight (LIVE)
+        's': float(c.s),                         # legacy particle-image multiplier
+        'depth_add': float(c.depth_add),         # legacy additive minimum depth
+        'depth_levels': int(c.depth_levels),     # depth quantisation bins (LIVE)
+        'kern_size': int(c.kern_size),           # legacy fixed kernel half-size
+        'complex_model': str(getattr(c, 'complex_model', 'v2')).lower(),
+        'complex_beta_scale': float(getattr(c, 'complex_beta_scale', 1.0)),
+    }
 
 
 def _is_pil_image(img):
@@ -289,7 +321,7 @@ def _turbid_v2(shape, pr, sp_col, sigma_c):
 
 
 def processImg(imgD_Norm, imgRGB, beta, A_light,
-               gamma_eff=None, alpha_eff=None, beta_eff=None):
+               gamma_eff=None, alpha_eff=None, beta_eff=None, cfg=None):
     """Complex forward model.
 
     ``gamma_eff`` / ``alpha_eff`` / ``beta_eff`` are the EFFECTIVE per-channel
@@ -297,39 +329,56 @@ def processImg(imgD_Norm, imgRGB, beta, A_light,
     "normalized" 0-255 path) they fall back to the legacy config values and
     ``beta * complex_beta_scale``.
     """
+    P = _phys(cfg)
+
     if beta_eff is None:
         # Legacy 0-255 axis: rescale the per-metre Jerlov beta onto it.
-        beta_eff = (np.asarray(beta, dtype=np.float64) * CONFIG.complex_beta_scale).tolist()
+        beta_eff = (np.asarray(beta, dtype=np.float64) * P['complex_beta_scale']).tolist()
     if gamma_eff is None:
-        gamma_eff = gamma
+        gamma_eff = P['gamma']
     if alpha_eff is None:
-        alpha_eff = alpha
+        alpha_eff = P['alpha']
 
-    imgD_Norm = imgD_Norm + depth_add  # add a minimum to depth map
+    # depth_add is a LEGACY 0-255-axis knob. On the metric axis it would add whole METRES
+    # of water to every pixel (25.5x more potent than on the axis it was designed for), so
+    # it is confined to the normalized branch below.
 
     rgb_f = imgRGB.astype(np.float32)
-    d_f = imgD_Norm.astype(np.float32)
 
-    if str(getattr(CONFIG, 'complex_model', 'ricardo')).lower() == 'v2':
+    if P['complex_model'] == 'v2':
         # ---- corrected model (P1 untruncated PSF, P2 energy-conserving scatter) ----
-        I_out = _scatter_v2(rgb_f, d_f, gamma_eff, alpha_eff, depth_levels)
+        d_f = imgD_Norm.astype(np.float32)
+        I_out = _scatter_v2(rgb_f, d_f, gamma_eff, alpha_eff, P['depth_levels'])
         I_total = outTotal(rgb_f, d_f, I_out, gamma_eff, alpha_eff, beta_eff, A_light)
         # P4: Eq. 6 exactly -> I = u*I_sct + (1-u)*SP   (no stray `s` multiplier)
-        sp = _turbid_v2(rgb_f.shape, CONFIG.turbu_pr, turbu_c, CONFIG.turbu_sigma)
-        out = I_total * u + sp * (1.0 - u)
+        sp = _turbid_v2(rgb_f.shape, P['turbu_pr'], P['turbu_c'], P['turbu_sigma'])
+        out = I_total * P['u'] + sp * (1.0 - P['u'])
     else:
         # ---- original ricardo path (same maths as before; P0 vectorised outTotal) ----
+        d_f = (imgD_Norm + P['depth_add']).astype(np.float32)
         I_out = scatterPsdOp(torch.from_numpy(rgb_f), torch.from_numpy(d_f),
-                             gamma_eff, alpha_eff, kern_size, depth_levels).data.numpy()
+                             gamma_eff, alpha_eff, P['kern_size'], P['depth_levels']).data.numpy()
         I_total = outTotal(rgb_f, d_f, I_out, gamma_eff, alpha_eff, beta_eff, A_light)
-        out2 = turbidDeg(rgb_f, d_f, turbu_p, turbu_c)
-        out = I_total * u + out2 * s * (1 - u)
+        out2 = turbidDeg(rgb_f, d_f, P['turbu_p'], P['turbu_c'])
+        out = I_total * P['u'] + out2 * P['s'] * (1 - P['u'])
 
-    # NaN -> saturated, clip to the 0-255 display range (vectorised; was a triple loop)
-    out = np.nan_to_num(out, nan=255.0, posinf=255.0, neginf=0.0)
-    out = np.clip(out, 0.0, 255.0).astype(np.uint8)
+    # Fail LOUD on non-finite radiance. The old code did nan_to_num(nan=255.0), which
+    # silently wrote PURE WHITE pixels into the training targets — a physics bug became
+    # plausible-looking training data. If this ever fires, the depth map or the
+    # coefficients are broken and the GT must not be written.
+    if not np.isfinite(out).all():
+        n_bad = int((~np.isfinite(out)).sum())
+        raise ValueError(
+            "Non-finite radiance in the complex forward model (%d / %d elements). "
+            "Check the depth map for NaN/Inf and the beta/alpha/gamma coefficients."
+            % (n_bad, out.size))
 
-    return out
+    # float32 in [0, 255], NOT uint8. The uint8 cast TRUNCATED (floored), biasing the
+    # complex GT by -0.5 gray levels relative to the float64 classical-haze GT — in
+    # Techniques 2/3 the residual head then had to learn that constant offset as if it
+    # were physics. Quantisation to uint8 (if wanted) belongs at the SAVE step, where it
+    # is done with np.rint (round, not floor).
+    return np.clip(out, 0.0, 255.0).astype(np.float32)
 
 
 def getRndPar():
@@ -384,8 +433,15 @@ def to_transform(pic):
 
 
 def compute_complex_noise(input_image, input_depth, beta_mat, A_light,
-                          max_depth_m=None, focal_px=None, clarity=1.0):
+                          max_depth_m=None, focal_px=None, clarity=1.0, cfg=None, seed=None):
     """Full underwater degradation of an RGB image [0,1] given its depth map [0,1].
+
+    ``seed`` makes the Eq.6 particle field reproducible. ``_turbid_v2`` draws from the
+    global numpy RNG and NOTHING used to seed it, so the complex GT was not byte-
+    reproducible and a partially-regenerated directory silently mixed realisations. Pass
+    a per-image seed (e.g. random_seed + idx).
+
+    Returns float32 in [0, 255].
 
     ``complex_depth_mode``:
       "metric" (P3, default) — depth stays in METRES (``input_depth * max_depth_m``) and
@@ -403,24 +459,39 @@ def compute_complex_noise(input_image, input_depth, beta_mat, A_light,
         width depends on each image's own depth range (a bathroom and a street get the
         same blur at their respective far planes) and gamma/alpha/beta are unitless.
     """
+    _cfg = cfg if cfg is not None else CONFIG
+    if seed is not None:
+        np.random.seed(int(seed) % (2 ** 32))
+
     input_image = input_image * 255.0                        # image -> 0-255
-    mode = str(getattr(CONFIG, 'complex_depth_mode', 'normalized')).lower()
+    mode = str(getattr(_cfg, 'complex_depth_mode', 'normalized')).lower()
 
     if mode == 'metric':
         if max_depth_m is None or focal_px is None:
             raise ValueError("complex_depth_mode='metric' requires max_depth_m and focal_px.")
         clarity = float(clarity)
         imgD_Norm = np.asarray(input_depth, dtype=np.float64) * float(max_depth_m)
+        if not np.isfinite(imgD_Norm).all():
+            raise ValueError("Depth map contains NaN/Inf — refusing to generate GT from it.")
+        # Clip the depth to the SAME window the training target uses ([0.4, 10] m for NYU,
+        # i.e. [4%, 100%] of max_depth_m). Without this, missing-depth pixels (PNG value 0)
+        # get z = 0 => t = exp(0) = 1 => the UN-DEGRADED original pixel is written into the
+        # underwater GT, and it also picks up inbound scatter from its hazed neighbours —
+        # rendering as clipped-to-white blobs wherever the Kinect had no return. This also
+        # guarantees the GT physics axis and the network's target axis are the same window.
+        imgD_Norm = np.clip(imgD_Norm,
+                            DEPTH_CLIP_FRAC * float(max_depth_m),
+                            float(max_depth_m))
         # Effective coefficients on the METRIC depth axis.
-        gamma_eff = (np.asarray(CONFIG.gamma_angular, np.float64) * float(focal_px) * clarity).tolist()
-        alpha_eff = (np.asarray(CONFIG.alpha_metric, np.float64) * clarity).tolist()
+        gamma_eff = (np.asarray(_cfg.gamma_angular, np.float64) * float(focal_px) * clarity).tolist()
+        alpha_eff = (np.asarray(_cfg.alpha_metric, np.float64) * clarity).tolist()
         beta_eff = (np.asarray(beta_mat, np.float64) * clarity).tolist()
         A_light = (np.array(A_light) * 255).tolist()
         return processImg(imgD_Norm, input_image, beta_mat, A_light,
-                          gamma_eff=gamma_eff, alpha_eff=alpha_eff, beta_eff=beta_eff)
+                          gamma_eff=gamma_eff, alpha_eff=alpha_eff, beta_eff=beta_eff, cfg=_cfg)
 
     input_depth = input_depth * 255.0                        # depth -> 0-255
     imgD_Norm = input_depth + 1
     imgD_Norm = (imgD_Norm / np.min([np.max(imgD_Norm), 255])) * 255  # >0 and <=255
     A_light = (np.array(A_light) * 255).tolist()
-    return processImg(imgD_Norm, input_image, beta_mat, A_light)
+    return processImg(imgD_Norm, input_image, beta_mat, A_light, cfg=_cfg)

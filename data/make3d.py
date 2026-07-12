@@ -18,6 +18,7 @@ import cv2
 from scipy import io
 
 from config import CONFIG
+from utils.depth_range import DEPTH_CLAMP_MIN, DEPTH_CLAMP_MAX
 
 # Spatial dimensions [W, H] — from config so the loader stays in sync with the
 # GT generator (data_2.py). Raise make3d_*_size to reduce the blocky look.
@@ -62,9 +63,17 @@ def paired_make3d_files(img_dir, depth_dir):
     return paired_imgs, paired_deps
 
 def _depth_to_tensor(depth_metres, max_depth_m):
+    """Metric depth -> the canonical stored-depth axis d = z/max_depth * 1000.
+
+    Floor is DEPTH_CLAMP_MIN (40), not 10. The reciprocal target y = 1000/d must land in
+    [1, 25] — the range the shared depth head (models/decoder_1ch.Decoder1Ch) is bounded to
+    by its scaled sigmoid. The old floor of 10 allowed y up to 100, i.e. a target range 4x
+    wider than the head can even represent. Because the floor is a FRACTION of max_depth,
+    this is z >= 0.4 m for NYU and z >= 3.2 m for Make3D/KITTI (both sane near clips).
+    """
     d = torch.from_numpy(depth_metres).float()
     d = d / max_depth_m * 1000.0
-    d = torch.clamp(d, 10.0, 1000.0)
+    d = torch.clamp(d, DEPTH_CLAMP_MIN, DEPTH_CLAMP_MAX)
     return d.unsqueeze(0)
 
 

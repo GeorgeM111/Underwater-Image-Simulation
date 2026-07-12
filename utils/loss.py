@@ -3,8 +3,6 @@
 Single source of truth (previously duplicated as a per-technique ``loss.py``).
 """
 
-import sys
-import math
 from math import exp
 
 import torch
@@ -55,27 +53,20 @@ def ssim(img1, img2, val_range, window_size=11, window=None, size_average=True, 
     ssim_map = ((2 * mu1_mu2 + C1) * v1) / ((mu1_sq + mu2_sq + C1) * v2)
 
     if size_average:
-        # nan-safe mean; Tensor.nanmean() only exists on torch>=1.8, so fall
-        # back to an explicit NaN-masked mean on older torch.
-        if hasattr(ssim_map, "nanmean"):
-            ret = ssim_map.nanmean()
-        else:
-            ret = ssim_map[~torch.isnan(ssim_map)].mean()
+        # PLAIN mean, deliberately NOT nanmean. nanmean() masked out the NaN pixels
+        # and averaged the survivors, so a prediction that was NaN over a quarter of
+        # the frame still reported SSIM ~1.0 ("perfect"). It also made the old
+        # sys.exit guard below unreachable for partial NaN. A NaN prediction must
+        # produce a NaN loss/metric so the caller can see it and act.
+        ret = ssim_map.mean()
     else:
         ret = ssim_map.mean(1).mean(1).mean(1)
 
-    if math.isnan(ret) or math.isinf(ret):
-        print("Check me, I have issues")
-        print("The value of ret is {}".format(ret))
-
-        if ssim_map.isnan().any():
-            print("Print ssim_map : ", ssim_map)
-        if img1.isnan().any():
-            print("Print pred image : ", img1)
-        if img2.isnan().any():
-            print("Print original image : ", img2)
-
-        sys.exit("Due to NaN value, I am exiting")
+    # NOTE: no sys.exit here. A library must never kill the interpreter — it raised
+    # SystemExit (a BaseException, so `except Exception` could not catch it) and could
+    # take down a multi-hour training run from inside a loss. Non-finite values now
+    # propagate; the training loop skips non-finite batches and the eval loop reports
+    # them (see the n_bad_batches guard in each train.py / test.py).
 
     if full:
         return ret, cs
@@ -118,13 +109,23 @@ def depth_loss(pred, target, val_range, lambda_l1=0.1, lambda_grad=1.0, lambda_s
 class VGGPerceptualLoss(nn.Module):
     """Perceptual loss using VGG16 feature maps up to relu3_3 (layer index 15).
 
-    Formula (from paper):
         L_perc(I, I_hat) = (1 / C_j H_j W_j) * || phi_j(I) - phi_j(I_hat) ||_F^2
 
     Notes:
         - Applied ONLY to RGB image reconstruction losses (L_p, L_t, L_g), not depth.
         - VGG16 weights are frozen throughout training.
-        - Inputs are expected to be in [0, 1]; they are clamped internally.
+        - Inputs are clamped to [0, 1] and then ImageNet-normalised.
+
+    The ImageNet normalisation is REQUIRED and was missing. VGG16 is pretrained on
+    ImageNet-normalised inputs (mean 0, range ~4.4); feeding it raw [0,1] (mean ~+0.45,
+    range 1.0) puts relu3_3 off-distribution, so the term was not the perceptual
+    distance it claims to be. The paper's "no input normalisation" rule is about the
+    TRAINABLE DenseNet encoder, which can adapt — a FROZEN VGG cannot.
+
+    The clamp to [0,1] is kept so VGG16 sees a valid image, but note its derivative is
+    exactly 0 outside [0,1]: the perceptual term is inert on out-of-range pixels. Since
+    pred_complex (= unbounded residual + haze) and out_direct routinely leave the range,
+    the trainers add a small differentiable range penalty (see `range_penalty`).
     """
 
     def __init__(self):
@@ -134,16 +135,37 @@ class VGGPerceptualLoss(nn.Module):
         self.feature_extractor = nn.Sequential(*list(vgg.features.children())[:16])
         for param in self.feature_extractor.parameters():
             param.requires_grad = False
+        self.feature_extractor.eval()
+        self.register_buffer('imagenet_mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer('imagenet_std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+
+    def _prep(self, x):
+        x = torch.clamp(x.float(), 0.0, 1.0)
+        return (x - self.imagenet_mean) / self.imagenet_std
+
+    def train(self, mode=True):
+        # Keep the frozen VGG in eval mode no matter what the parent module does.
+        super(VGGPerceptualLoss, self).train(mode)
+        self.feature_extractor.eval()
+        return self
 
     def forward(self, pred, target):
-        pred = torch.clamp(pred.float(), 0.0, 1.0)
-        target = torch.clamp(target.float(), 0.0, 1.0)
-
-        phi_pred = self.feature_extractor(pred)
-        phi_target = self.feature_extractor(target)
+        phi_pred = self.feature_extractor(self._prep(pred))
+        phi_target = self.feature_extractor(self._prep(target))
 
         _, C_j, H_j, W_j = phi_pred.shape
 
         diff = phi_pred - phi_target
         loss_per_sample = torch.sum(diff ** 2, dim=[1, 2, 3]) / (C_j * H_j * W_j)
         return loss_per_sample.mean()
+
+
+def range_penalty(x, lo=0.0, hi=1.0):
+    """Differentiable penalty for leaving [lo, hi].
+
+    ``torch.clamp`` has derivative exactly 0 outside its range, so any loss that
+    clamps its input (e.g. the VGG perceptual term) provides NO gradient on the very
+    pixels that are out of range. This gives those pixels a gradient that pushes them
+    back into the valid image range. Zero for an in-range tensor.
+    """
+    return (x - x.clamp(lo, hi)).abs().mean()

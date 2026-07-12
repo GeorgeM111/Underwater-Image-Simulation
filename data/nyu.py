@@ -26,6 +26,7 @@ from sklearn.utils import shuffle
 from config import CONFIG
 from utils.physics import compute_complex_noise  # noqa: F401  (kept for GT parity / reuse)
 from utils.transforms import getDefaultTrainTransform, getNoTransform
+from utils.provenance import check_physics_manifest
 
 
 def _is_pil_image(img):
@@ -57,6 +58,21 @@ def loadZipToMem(zip_file, csv='data/nyu2_train.csv'):
     return _ZIP_CACHE[key]
 
 
+def _load_gt(path):
+    """Load a ground-truth array as float32 in [0, 1], whatever it was stored as.
+
+    The GT generator now writes uint8 (3.2x smaller, zero information loss at these
+    amplitudes) but older dirs hold float64 already in [0, 1]. Without this dtype guard
+    the new loader would divide a pre-existing FLOAT gt by 255 a second time, producing a
+    near-black target that trains happily and silently. Dispatch on dtype, never on
+    assumption.
+    """
+    arr = load(path)
+    if arr.dtype == np.uint8:
+        return arr.astype(np.float32) / 255.0
+    return arr.astype(np.float32)
+
+
 class depthDatasetMemory(Dataset):
     def __init__(self, data, nyu2_train, beta_mat_arr, a_mat_arr, gt_dir, transform=None,
                  augment=False):
@@ -75,8 +91,8 @@ class depthDatasetMemory(Dataset):
         haze_image_name = os.path.join(self.gt_dir, str(idx) + "haze_image" + ".npy")
         complex_haze_image_name = os.path.join(self.gt_dir, str(idx) + "complex_haze_image" + ".npy")
 
-        haze_image = load(haze_image_name)
-        complex_noisy_img = load(complex_haze_image_name)
+        haze_image = _load_gt(haze_image_name)
+        complex_noisy_img = _load_gt(complex_haze_image_name)
 
         sample = self.nyu_dataset[idx]
         image = Image.open(BytesIO(self.data[sample[0]]))
@@ -172,8 +188,10 @@ def _build_full_dataset(config, transform, csv='data/nyu2_train.csv',
     data, rows = loadZipToMem(config.nyu_zip_path, csv=csv)
     beta_mat_arr = load(beta_path or config.beta_mat_nyu_train)
     a_mat_arr = load(a_path or config.a_mat_nyu_train)
+    resolved_gt = gt_dir or config.nyu_gt_train_dir
+    check_physics_manifest(resolved_gt, config)
     return depthDatasetMemory(data, rows, beta_mat_arr, a_mat_arr,
-                              gt_dir=gt_dir or config.nyu_gt_train_dir, transform=transform,
+                              gt_dir=resolved_gt, transform=transform,
                               augment=augment)
 
 
@@ -264,12 +282,16 @@ def get_test_loader(config):
             beta_path=config.beta_mat_nyu_test, a_path=config.a_mat_nyu_test,
             gt_dir=config.nyu_gt_test_dir)
         print("[data.nyu] test mode=official  using %d images (nyu2_test.csv)" % len(full))
-        return DataLoader(full, config.batch_size_nyu, shuffle=False, drop_last=True,
+        # drop_last=False: with True, the final partial batch was DISCARDED, so the
+        # reported score was a function of batch_size_nyu — the same checkpoint scored
+        # different image sets (and printed different numbers) at bs=10 vs bs=16.
+        # AverageMeter already weights by the batch size, so a short last batch is exact.
+        return DataLoader(full, config.batch_size_nyu, shuffle=False, drop_last=False,
                           num_workers=config.num_workers)
 
     full = _build_full_dataset(config, getNoTransform(is_test=True))
     split_idx = int(config.train_split_ratio * len(full))
     test_subset = Subset(full, list(range(split_idx, len(full))))
     print("[data.nyu] test mode=tail  using held-out tail (%d images)" % len(test_subset))
-    return DataLoader(test_subset, config.batch_size_nyu, shuffle=False, drop_last=True,
+    return DataLoader(test_subset, config.batch_size_nyu, shuffle=False, drop_last=False,
                       num_workers=config.num_workers)

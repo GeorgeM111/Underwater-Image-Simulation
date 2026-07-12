@@ -29,7 +29,10 @@ import cv2
 import glob
 
 from config import CONFIG
+from utils.provenance import (physics_fingerprint as _fingerprint,
+                             write_physics_manifest as _write_manifest)
 from utils.physics import compute_complex_noise
+from utils.depth_range import DEPTH_CLIP_FRAC, DEPTH_CLAMP_MIN, DEPTH_CLAMP_MAX
 #GM - define a menu of physically plausible water types that will be used to draw a value at random per image.
 #GM - This accounts for the fact that water might appear different based on geography, seasons, depth, weather, etc..
 beta_val_r = CONFIG.beta_val_r
@@ -40,6 +43,16 @@ beta_val_b = CONFIG.beta_val_b
 # the configured NYU train parameter-matrix path so all parameter .npy files
 # live alongside it (replaces the old hard-coded /datas/.../parameters dir).
 _PARAMS_DIR = _os.path.dirname(CONFIG.beta_mat_nyu_train)
+
+# Physics provenance: the manifest hash lives in utils/provenance.py so the DATALOADERS can
+# import the check without depending on this generation package (a guard that can silently
+# fail to import is not a guard).
+def physics_fingerprint(cfg=None):
+    return _fingerprint(cfg if cfg is not None else CONFIG)
+
+
+def write_physics_manifest(gt_dir, cfg=None):
+    return _write_manifest(gt_dir, cfg if cfg is not None else CONFIG)
 
 
 def _paired_make3d_files(img_dir, depth_dir):
@@ -336,6 +349,8 @@ def generate_and_save_haze_image(stIndex, endIndex, indices=None):
     are generated (used to build GT for a filtered subset); ``stIndex``/``endIndex``
     are then ignored. Otherwise the contiguous range [stIndex, endIndex) is used.
     """
+    _os.makedirs(CONFIG.nyu_gt_train_dir, exist_ok=True)
+    write_physics_manifest(CONFIG.nyu_gt_train_dir)
     data, nyu_dataset = loadZipToMem(CONFIG.nyu_zip_path)
     a_mat_arr = load(_os.path.join(_PARAMS_DIR, 'A_Mat_NYU_train.npy'))
     beta_mat_arr = load(_os.path.join(_PARAMS_DIR, 'Beta_Mat_NYU_train.npy'))
@@ -353,7 +368,15 @@ def generate_and_save_haze_image(stIndex, endIndex, indices=None):
         image_full, image_half, depth_half_10_1000, depth_half_0_1 = sample['image_norm'], \
             sample['image_half_norm'], sample['depth_half_norm_10_1000'], sample['depth_half_norm_0_1']
 
-        depth_half_0_1 = depth_half_0_1*10
+        # -> METRES, then clip to the paper's [0.4, 10] m target window.
+        # Without the clip, missing-depth pixels (Kinect returns PNG 0) get z = 0 => t = 1
+        # => the UN-DEGRADED original pixel is written straight into the underwater GT, and
+        # it additionally picks up inbound scatter from its hazed neighbours -> clipped-to-
+        # white blobs. This also puts the GT physics on exactly the same depth axis as the
+        # network's training target (utils/transforms.DEPTH_CLAMP_MIN).
+        depth_half_0_1 = torch.clamp(depth_half_0_1 * 10.0,
+                                     DEPTH_CLIP_FRAC * CONFIG.nyu_max_depth_m,
+                                     CONFIG.nyu_max_depth_m)
         m = depth_half_0_1.shape[1]
         n = depth_half_0_1.shape[2]
 
@@ -386,10 +409,15 @@ def generate_and_save_haze_image(stIndex, endIndex, indices=None):
         image_half_numpy = np.swapaxes(image_half_numpy, 0, 1)  # making m * n *3
         haze_image = np.add((np.multiply(image_half_numpy, tx1)), second_term)
 
+        # seed=random_seed+idx: _turbid_v2 draws the Eq.6 particle field from the global
+        # numpy RNG and NOTHING used to seed it, so the complex GT was not byte-reproducible
+        # and a partially-regenerated directory silently mixed realisations. Now that the
+        # particles are actually VISIBLE (u=0.90), that matters.
         complex_noisy_img = compute_complex_noise(image_half_numpy, depth_half_0_1_3d[:, :, 0]/10, beta_mat,
                                                   a_mat, max_depth_m=CONFIG.nyu_max_depth_m,
                                                   focal_px=CONFIG.nyu_focal_px,
-                                                  clarity=CONFIG.nyu_water_clarity)
+                                                  clarity=CONFIG.nyu_water_clarity,
+                                                  seed=int(getattr(CONFIG, 'random_seed', 42)) + idx)
         complex_noisy_img = complex_noisy_img/255
 
         del a_mat
@@ -411,10 +439,15 @@ def generate_and_save_haze_image(stIndex, endIndex, indices=None):
         #orig_image_name =  "/sandbox1/gmoussa/ground_truth/nyu/train/" +  str(idx) + "orig_image" + ".npy"
 
 
-        save(haze_image_name, haze_image)
-        save(complex_haze_image_name, complex_noisy_img)
-        #save(orig_depth_image_name, depth)
-        #save(orig_image_name, image)
+        # float64 GT was 3.69 MB/pair (37 GB for the 10k subset) and the loader down-casts
+        # to fp32 anyway. haze is a convex combination so it is exactly in [0,1] -> float32.
+        # complex quantises to uint8 with np.rint (ROUND, not the old .astype(uint8) floor,
+        # which biased the complex GT by -0.5 gray levels relative to the float haze GT and
+        # made the residual head learn that constant offset as if it were physics).
+        # data.nyu._load_gt dispatches on dtype, so old float dirs still load correctly.
+        save(haze_image_name, np.asarray(haze_image, dtype=np.float32))
+        save(complex_haze_image_name,
+             np.rint(np.clip(complex_noisy_img, 0.0, 1.0) * 255.0).astype(np.uint8))
 
         # print("I am done with image no : ", idx)
 
@@ -425,6 +458,8 @@ def generate_and_save_haze_image(stIndex, endIndex, indices=None):
 
 #GM - NYU Test
 def generate_and_save_haze_image_test(stIndex, endIndex):
+    _os.makedirs(CONFIG.nyu_gt_test_dir, exist_ok=True)
+    write_physics_manifest(CONFIG.nyu_gt_test_dir)
     data, nyu_dataset = loadZipToMemTest(CONFIG.nyu_zip_path)
     a_mat_arr = load(_os.path.join(_PARAMS_DIR, 'A_Mat_NYU_test.npy'))
     beta_mat_arr = load(_os.path.join(_PARAMS_DIR, 'Beta_Mat_NYU_test.npy'))
@@ -445,7 +480,10 @@ def generate_and_save_haze_image_test(stIndex, endIndex):
         image_full, image_half, depth_half_10_1000, depth_half_0_1 = sample['image_norm'], \
             sample['image_half_norm'], sample['depth_half_norm_10_1000'], sample['depth_half_norm_0_1']
 
-        depth_half_0_1 = depth_half_0_1*10
+        # -> METRES, clipped to the paper's [0.4, 10] m window (see the train generator).
+        depth_half_0_1 = torch.clamp(depth_half_0_1 * 10.0,
+                                     DEPTH_CLIP_FRAC * CONFIG.nyu_max_depth_m,
+                                     CONFIG.nyu_max_depth_m)
         m = depth_half_0_1.shape[1]
         n = depth_half_0_1.shape[2]
 
@@ -478,10 +516,12 @@ def generate_and_save_haze_image_test(stIndex, endIndex):
         image_half_numpy = np.swapaxes(image_half_numpy, 0, 1)  # making m * n *3
         haze_image = np.add((np.multiply(image_half_numpy, tx1)), second_term)
 
+        # Distinct seed stream from the train split (+2**20) so the two never correlate.
         complex_noisy_img = compute_complex_noise(image_half_numpy, depth_half_0_1_3d[:, :, 0]/10, beta_mat,
                                                   a_mat, max_depth_m=CONFIG.nyu_max_depth_m,
                                                   focal_px=CONFIG.nyu_focal_px,
-                                                  clarity=CONFIG.nyu_water_clarity)
+                                                  clarity=CONFIG.nyu_water_clarity,
+                                                  seed=int(getattr(CONFIG, 'random_seed', 42)) + (1 << 20) + idx)
         complex_noisy_img = complex_noisy_img/255
 
         del a_mat
@@ -502,8 +542,10 @@ def generate_and_save_haze_image_test(stIndex, endIndex):
         # orig_depth_image_name =  "/sandbox1/gmoussa/ground_truth/nyu/test/" +  str(idx) + "orig_depth_image" + ".npy"
         # orig_image_name =  "/sandbox1/gmoussa/ground_truth/nyu/test/" +  str(idx) + "orig_image" + ".npy"
 
-        save(haze_image_name, haze_image)
-        save(complex_haze_image_name, complex_noisy_img)
+        # Same compact, round-not-floor encoding as the train split (see there).
+        save(haze_image_name, np.asarray(haze_image, dtype=np.float32))
+        save(complex_haze_image_name,
+             np.rint(np.clip(complex_noisy_img, 0.0, 1.0) * 255.0).astype(np.uint8))
 
 #GM - Make3D Train
 def generate_and_save_ricardo_image_make_3D(stIndex, endIndex):
@@ -943,10 +985,15 @@ class depthDatasetMemory(Dataset):
         # self.another_simple_image_save(image_half_numpy, '/homes/t20monda/Water_Correction_Test_1/DenseDepth/orig_imag_NN.png')
         # self.another_simple_image_save(depth_half_0_1_3d, '/homes/t20monda/Water_Correction_Test_1/DenseDepth/depth_imag_NN.png')
 
+        # seed=random_seed+idx: _turbid_v2 draws the Eq.6 particle field from the global
+        # numpy RNG and NOTHING used to seed it, so the complex GT was not byte-reproducible
+        # and a partially-regenerated directory silently mixed realisations. Now that the
+        # particles are actually VISIBLE (u=0.90), that matters.
         complex_noisy_img = compute_complex_noise(image_half_numpy, depth_half_0_1_3d[:, :, 0]/10, beta_mat,
                                                   a_mat, max_depth_m=CONFIG.nyu_max_depth_m,
                                                   focal_px=CONFIG.nyu_focal_px,
-                                                  clarity=CONFIG.nyu_water_clarity)
+                                                  clarity=CONFIG.nyu_water_clarity,
+                                                  seed=int(getattr(CONFIG, 'random_seed', 42)) + idx)
         complex_noisy_img = complex_noisy_img/255
         del a_mat
         del beta_mat
@@ -1062,7 +1109,8 @@ class ToTensor(object):
             depth_half_norm_10_1000 = self.to_tensor(depth_half).float() * 1000
 
         # put in expected range
-        depth_half_norm_10_1000 = torch.clamp(depth_half_norm_10_1000, 10, 1000)
+        # Floor 40 (= 0.4 m), matching utils.transforms.DEPTH_CLAMP_MIN and the paper.
+        depth_half_norm_10_1000 = torch.clamp(depth_half_norm_10_1000, DEPTH_CLAMP_MIN, DEPTH_CLAMP_MAX)
         return {'image_norm': image_norm_0_1, 'image_half_norm': image_half_norm_0_1,
                 'depth_half_norm_10_1000': depth_half_norm_10_1000, 'depth_half_norm_0_1': depth_half_0_1}
 
@@ -1117,7 +1165,8 @@ def ToTensorCustom(sample, is_test):
 
 
     # put in expected range
-    depth_half_norm_10_1000 = torch.clamp(depth_half_norm_10_1000, 10, 1000)
+    # Floor 40 (= 0.4 m), matching utils.transforms.DEPTH_CLAMP_MIN and the paper.
+    depth_half_norm_10_1000 = torch.clamp(depth_half_norm_10_1000, DEPTH_CLAMP_MIN, DEPTH_CLAMP_MAX)
     return {'image_norm': image_norm_0_1, 'image_half_norm': image_half_norm_0_1,
             'depth_half_norm_10_1000': depth_half_norm_10_1000, 'depth_half_norm_0_1': depth_half_0_1}
 

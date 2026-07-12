@@ -42,17 +42,60 @@ def _resolve_indices_path(cfg, override):
                         "%d_filtered_nyu.npy" % cfg.nyu_subset_size)
 
 
+def _test_tail_indices(cfg):
+    """The held-out test tail: [split_idx, N).
+
+    ``nyu_test_mode: "tail"`` builds the test set from exactly these indices and loads GT
+    for them — but the SUBSET generator only writes GT for the filtered TRAIN pool
+    (filter_nyu_subset restricts to [0, split_idx)). So on a pre-existing GT directory the
+    tail files SURVIVE FROM THE PREVIOUS PHYSICS: you train on new-physics GT and are
+    scored against old-physics GT, silently. Always regenerate the tail alongside the
+    subset after any physics change.
+    """
+    from data.nyu import loadZipToMem
+    _, rows = loadZipToMem(cfg.nyu_zip_path)
+    split_idx = int(cfg.train_split_ratio * len(rows))
+    return list(range(split_idx, len(rows)))
+
+
 def main():
     parser = argparse.ArgumentParser(description='Generate NYU GT for a filtered subset only.')
     parser.add_argument('--config', default=None, help='path to config YAML (default ./config.yaml)')
     parser.add_argument('--indices', default=None, help='path to a .npy of indices (overrides config)')
     parser.add_argument('--chunk-size', type=int, default=2000, help='indices per parallel job')
     parser.add_argument('--jobs', type=int, default=None, help='parallel jobs (default config.n_parallel_jobs)')
+    parser.add_argument('--with-test-tail', action='store_true',
+                        help="ALSO generate GT for the held-out test tail [split_idx, N). "
+                             "Required with nyu_test_mode='tail' — otherwise test.py either "
+                             "crashes on a missing file or, worse, silently scores you against "
+                             "STALE ground truth left over from the previous physics.")
+    parser.add_argument('--tail-only', action='store_true',
+                        help='Generate ONLY the test tail (skip the training subset).')
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     idx_path = _resolve_indices_path(cfg, args.indices)
-    indices = np.asarray(np.load(idx_path), dtype=np.int64).tolist()
+
+    if args.tail_only:
+        indices = []
+    else:
+        indices = np.asarray(np.load(idx_path), dtype=np.int64).tolist()
+
+    n_subset = len(indices)
+    n_tail = 0
+    if args.with_test_tail or args.tail_only:
+        tail = _test_tail_indices(cfg)
+        existing = set(indices)
+        tail = [i for i in tail if i not in existing]
+        n_tail = len(tail)
+        indices = indices + tail
+        print("[tail] adding %d held-out test-tail indices [%d, %d)"
+              % (n_tail, tail[0] if tail else -1, (tail[-1] + 1) if tail else -1))
+    elif str(getattr(cfg, 'nyu_test_mode', 'tail')) == 'tail':
+        print("[WARNING] nyu_test_mode='tail' but --with-test-tail was NOT passed. The test "
+              "tail will have NO GT from this run. If a GT dir already exists, its tail files "
+              "are STALE (previous physics) and test.py will silently score against them.")
+
     jobs = args.jobs if args.jobs is not None else cfg.n_parallel_jobs
 
     # chunk the index list into sublists for the parallel workers
@@ -60,7 +103,8 @@ def main():
 
     print("Python :", __import__('sys').version.split()[0], "| Joblib :", joblib.__version__)
     print("Subset indices file :", idx_path)
-    print("Generating GT for %d images -> %s" % (len(indices), cfg.nyu_gt_train_dir))
+    print("Generating GT for %d images (%d subset + %d test-tail) -> %s"
+          % (len(indices), n_subset, n_tail, cfg.nyu_gt_train_dir))
     print("Chunks: %d (size <= %d)  |  jobs: %d" % (len(chunks), args.chunk_size, jobs))
 
     t0 = time.time()

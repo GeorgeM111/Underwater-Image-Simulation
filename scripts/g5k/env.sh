@@ -28,4 +28,12 @@ fi
 
 export PYTHONPATH="$REPO_DIR:${PYTHONPATH:-}"
 
+# Unbuffered stdout. Python BLOCK-buffers stdout when it is redirected to a file, so the
+# per-epoch "epoch N/M train=... val=..." lines would sit in a 4-8 KB buffer and only appear
+# hours later (or never, if the job is killed). With this, `tail -f logs/T1_NYU_base.log`
+# shows progress live. PYTHONFAULTHANDLER dumps a traceback on a hard crash (segfault/OOM),
+# which is otherwise silent.
+export PYTHONUNBUFFERED=1
+export PYTHONFAULTHANDLER=1
+
 mkdir -p "$PROJECT_OUT/runs" "$PROJECT_OUT/checkpoints" "$TORCH_HOME"

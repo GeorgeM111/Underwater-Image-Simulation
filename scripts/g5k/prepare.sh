@@ -15,7 +15,11 @@ cd "$REPO_DIR"
 : "${PROJECT_OUT:=$HOME/underwater/out}"
 : "${TORCH_HOME:=$HOME/.cache/torch}"
 export TORCH_HOME
-mkdir -p "$HOME/underwater" "$PROJECT_OUT/runs" "$PROJECT_OUT/checkpoints" "$TORCH_HOME"
+# `logs/` in the REPO is required by the #OAR -O/-E directives in sweep_nyu.oar.sh: OAR
+# resolves those paths at SUBMIT time, before the job's own mkdir runs, so oarsub fails if
+# the directory is missing.
+mkdir -p "$HOME/underwater" "$PROJECT_OUT/runs" "$PROJECT_OUT/checkpoints" "$TORCH_HOME" \
+         "$REPO_DIR/logs"
 
 # ---- 1. virtualenv -----------------------------------------------------------
 if [ ! -d "$HOME/underwater/venv" ]; then

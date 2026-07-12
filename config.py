@@ -96,7 +96,7 @@ _DEFAULTS = {
     "checkpoint_dir": "${PROJECT_OUT}/checkpoints",
     "runs_dir": "${PROJECT_OUT}/runs",
     # Training
-    "batch_size_nyu": 10,
+    "batch_size_nyu": 16,
     "batch_size_make3d": 5,
     "epochs": 50,
     "learning_rate": 1.0e-4,
@@ -106,7 +106,7 @@ _DEFAULTS = {
     "early_stopping_patience": 5,
     "train_split_ratio": 0.96,
     "num_workers": 8,
-    "n_parallel_jobs": 20,
+    "n_parallel_jobs": 6,
     # Acceleration (utils/accel.py): bf16 autocast on the model forwards (H200-friendly).
     # bf16 needs no GradScaler. amp=False -> exact fp32 path. amp_dtype: bfloat16|float16.
     "amp": True,
@@ -129,7 +129,7 @@ _DEFAULTS = {
     #                   "subset" -> only the filtered indices below
     #   nyu_subset_indices: path to the indices .npy; None -> auto
     #                       ({nyu_subset_size}_filtered_nyu.npy in the params dir)
-    "nyu_train_mode": "all",
+    "nyu_train_mode": "subset",
     "nyu_subset_indices": None,
     # NYU test set selection (data.nyu.get_test_loader):
     #   "tail"     -> held-out tail of nyu2_train (paper's 96/4 protocol; DEFAULT)
@@ -146,8 +146,24 @@ _DEFAULTS = {
     "lambda_l1": 0.1,
     "lambda_ssim": 0.1,
     "lambda_perc": 0.1,
-    "lambda_depth": 1.0,
     "lambda_grad": 1.0,
+    # NOTE: "lambda_depth" was defined here and read by NOTHING (all 39 train scripts).
+    # Removed rather than wired up: the paper's Eq.7 has no such term.
+
+    # Learned-loss-weight regularisation (var1/var2). The paper's Eq.12/13/17/21 learn the
+    # weights with no regulariser; that objective is LINEAR in w, so its minimiser is a
+    # one-hot VERTEX and the losing loss terms lose their gradient permanently. See
+    # models/weight_head.py and utils/loss_balance.py. Zeros reproduce the paper exactly.
+    "weight_floor": 0.05,
+    "lambda_weight_reg": 0.01,
+    "loss_ema_momentum": 0.99,
+    "weight_head_dropout": 0.1,
+
+    # Optimisation stability
+    "grad_clip_norm": 1.0,
+    "weight_head_lr_mult": 0.1,
+    "lr_min": 1.0e-6,
+    "max_nonfinite_batches_per_epoch": 50,
     # Physics — classical model (Jerlov, per-metre).
     # Red is attenuated MOST in water; the original lists had red and blue
     # swapped (red ~0.02, blue ~0.4), inverting the colour physics.
@@ -194,7 +210,12 @@ _DEFAULTS = {
     #   "ricardo" -> the original code that produced the paper's figures
     #   "v2"      -> corrected: untruncated Gaussian PSF (P1), energy-conserving
     #                (1-k) scatter weighting (P2), Eq.6 hygiene (P4). See utils/physics.
-    "complex_model": "ricardo",
+    # MUST default to "v2". load_config() silently tolerates a MISSING config.yaml, so a
+    # node/container without it would fall back to these defaults -- and the legacy
+    # "ricardo" path convolves an UNWEIGHTED source, making total radiance (1+k)*J: up to
+    # 1.84x energy AMPLIFICATION that saturates against the 255 clip. Silent, plausible,
+    # and wrong. Fail closed on the corrected model instead.
+    "complex_model": "v2",
     # Scattering depth axis: "normalized" (per-image 0-255, the original) or "metric"
     # (true metres, using gamma_angular/alpha_metric + per-dataset focal length).
     "complex_depth_mode": "metric",
@@ -204,10 +225,10 @@ _DEFAULTS = {
     # blur differs only because the CAMERAS differ (focal length) and because a dataset
     # may be simulated under clearer water (clarity). Calibrated so NYU reproduces its
     # previous look (sigma=25.5px at z=10m, f=259.4).
-    "gamma_angular": [0.0049146, 0.0049146, 0.0021133],   # rad / metre, per channel (halved: sigma=12.8px@10m)
+    "gamma_angular": [0.0042, 0.0045, 0.0048],            # rad/m — near-flat; blue slightly WIDER (see config.yaml)
     # Straight-path attenuation k_c = exp(-alpha_metric_c * z_m * clarity). Calibrated
     # from the old 0-255-axis alpha: alpha_metric = alpha * 255 / nyu_max_depth_m.
-    "alpha_metric": [0.35, 0.35, 0.15],                   # 1 / metre, per channel (lowered from 0.816: sharp direct light to ~4-5m)
+    "alpha_metric": [0.45, 0.50, 0.55],                   # 1/m — scattered fraction; blue-heavy (Rayleigh)
     # Focal length in PIXELS at the GT (half) resolution of each dataset.
     "nyu_focal_px": 259.43,      # NYU-v2 official fx 518.8579 @640 wide -> /2
     "kitti_focal_px": 360.77,    # KITTI P_rect_02 fx ~721.54 @1242 wide; crop keeps f -> /2
@@ -222,12 +243,12 @@ _DEFAULTS = {
     "gamma": [0.1, 0.1, 0.043],
     "alpha": [0.032, 0.032, 0.012],
     "turbu_p": [0.15, 1.5],
-    "turbu_c": [34.0, 200.0, 201.0],
+    "turbu_c": [200.0, 235.0, 240.0],   # bright near-white marine snow
     # v2 Eq.6: per-channel particle probability pr_c and per-channel blur sigma_c.
     # (ricardo used one scalar each, and an off-by-1.5x density.)
-    "turbu_pr": [0.15, 0.15, 0.15],
-    "turbu_sigma": [1.5, 1.5, 1.5],
-    "u": 0.99,
+    "turbu_pr": [0.010, 0.010, 0.010],  # 1% seed density (0.15 was a veil, not snow)
+    "turbu_sigma": [0.9, 0.9, 0.9],     # ~1 px particle core
+    "u": 0.90,                          # Eq.6 mixing (0.99 made particles invisible)
     "s": 2,
     "depth_add": 0,
     "depth_levels": 16,
@@ -318,6 +339,34 @@ def load_config(path=None):
     except Exception:
         pass  # never let a perf tweak break config loading
     return cfg
+
+
+def assert_default_config(path=None):
+    """Fail loudly if ``--config`` names anything other than the repo-root config.yaml.
+
+    The GROUND-TRUTH GENERATORS read physics parameters through the ``CONFIG`` singleton,
+    which is bound at import from ``DEFAULT_CONFIG_PATH``. ``load_config(other)`` returns a
+    FRESH object and does not mutate that singleton, and joblib's loky workers are separate
+    processes that re-import ``config`` and rebuild ``CONFIG`` from the default path anyway.
+
+    So for the generation pipeline, ``--config other.yaml`` is honoured only PARTIALLY —
+    which is strictly worse than being ignored. It would apply to the printed output
+    directory and the job count while the physics silently came from the repo-root YAML,
+    so an experiment config could print one path and overwrite the BASELINE GT in another.
+
+    Rather than pretend, refuse. To run different physics, edit config.yaml (it is the
+    single source of truth) or point PROJECT_DATA/PROJECT_OUT elsewhere.
+    """
+    if not path:
+        return DEFAULT_CONFIG_PATH
+    if os.path.abspath(path) != os.path.abspath(DEFAULT_CONFIG_PATH):
+        raise SystemExit(
+            "REFUSING to run: --config %s is not the repo-root config.yaml (%s).\n"
+            "The GT generators read their physics from the CONFIG singleton (and joblib\n"
+            "workers re-import it from the default path), so an alternate YAML would be only\n"
+            "PARTIALLY honoured: the output directory would change but the physics would not.\n"
+            "Edit config.yaml directly instead." % (path, DEFAULT_CONFIG_PATH))
+    return DEFAULT_CONFIG_PATH
 
 
 # Loaded once at import time for convenient `from config import CONFIG` access.
