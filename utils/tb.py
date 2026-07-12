@@ -144,12 +144,13 @@ def log_health(writer, epoch, out_depth=None, pred_complex=None, pred_haze=None,
         stats['stats/out_depth_min'] = d.min().item()
         stats['stats/out_depth_max'] = d.max().item()
         stats['stats/out_depth_mean'] = d.mean().item()
-        # Depth head is bounded to [1, 25] by a scaled sigmoid; pinning at a bound means
-        # the pre-activation has saturated.
-        lo, hi = 1.0, 25.0
-        eps = 0.02 * (hi - lo)
-        at_bound = ((d <= lo + eps) | (d >= hi - eps)).float().mean().item()
-        stats['stats/out_depth_frac_at_bound'] = at_bound
+        # The depth head is y = y_min + softplus(raw): floored at y_min = 1, no ceiling. The
+        # ONLY degenerate state left is being pinned at the FLOOR (z = max_depth everywhere ->
+        # t -> 0 -> flat airlight). Watch this: it should stay small. 1.0 means the head has
+        # died and the depth map is a constant (which renders as a WHITE panel).
+        stats['stats/out_depth_frac_at_floor'] = (d <= 1.02).float().mean().item()
+        # Spread. If this hits 0 the depth map is constant, whatever value it sits at.
+        stats['stats/out_depth_spread'] = (d.max() - d.min()).item()
     for nm, t in (('pred_complex', pred_complex), ('pred_haze', pred_haze)):
         if t is None:
             continue

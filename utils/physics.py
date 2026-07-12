@@ -106,6 +106,32 @@ def compute_complex_image(output_depth, output_black_box, beta_val, a_mat, unit_
     return pred_complex_image
 
 
+def depth_for_complex(out_depth, cfg=None):
+    """The depth tensor to feed into the COMPLEX branch — detached or not.
+
+    THE TRADE-OFF (config key ``detach_depth_in_complex``, default True):
+
+    ``pred_complex = haze(z) + residual``. The residual is a full 3-channel decoder and is
+    vastly more expressive than the depth path. So if L_p (the complex-image loss) is allowed
+    to backprop into the depth head, gradient descent finds an easy shortcut: push the depth
+    to a CONSTANT — which makes ``haze`` a trivial global colour transform — and let the
+    residual reconstruct everything. The image still looks fine (the residual carries it) while
+    the depth map degenerates to a flat, constant field. Symptom: a WHITE depth panel in
+    TensorBoard and stats/out_depth_min == stats/out_depth_max.
+
+    Detaching removes that shortcut: the depth head is then supervised by L_d (the depth loss)
+    and, in Techniques 2/3/4, by L_t — the loss on the INITIAL DEGRADED image, which has NO
+    residual term and therefore CANNOT be satisfied by anything except a correct depth. That is
+    the honest physics-informed coupling.
+
+    Set ``detach_depth_in_complex: false`` to let L_p reach the depth head (a literal reading of
+    the paper's Eq.11). Expect the collapse above unless L_d is strongly weighted.
+    """
+    if cfg is None:
+        cfg = CONFIG
+    return out_depth.detach() if bool(getattr(cfg, 'detach_depth_in_complex', True)) else out_depth
+
+
 # =============================================================================
 # Ricardo underwater image-formation model (numpy / ground-truth generation)
 # =============================================================================

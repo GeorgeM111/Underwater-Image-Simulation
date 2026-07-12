@@ -122,7 +122,21 @@ random_seed:        42
 lambda_l1:   0.1
 lambda_ssim: 0.1
 lambda_perc: 0.1   # Technique 4 only (VGG perceptual term)
-lambda_grad: 1.0   # DenseDepth edge/gradient term on depth (not in the paper; keeps depth sharp)
+
+# DenseDepth edge/gradient term on depth (NOT in the paper — a repo addition that keeps the
+# depth map from going blurry).
+#
+# 0.25, NOT 1.0. This was the cause of the depth head collapsing to a constant.
+# 1.0 is DenseDepth's own ratio (edge 1.0 vs L1 0.1), but DenseDepth's depth head is an
+# UNBOUNDED Conv2d. Ours is a BOUNDED scaled sigmoid (models/decoder_1ch.py), and a 10:1
+# gradient-term weight drives the pre-activation far negative within ~10 optimizer steps. The
+# sigmoid then saturates, its derivative goes to ~0, AND t = exp(-beta*z) -> 0 at the same
+# time, so NEITHER loss can pull it back: out_depth is pinned at the floor (1.0) forever.
+#   Symptom: a WHITE depth panel in TensorBoard; stats/out_depth_min == max == 1.0 from epoch 1;
+#            loss/depth frozen at a constant while loss/total keeps falling.
+# Reproduced and bisected: lambda_grad 1.0 -> collapse; 0.25 / 0.1 / 0.0 -> converges.
+# 0.25 keeps a meaningful edge term (2.5x the L1 weight) without saturating the head.
+lambda_grad: 0.25
 
 # --- Learned loss weights (var1 / var2) ---------------------------------------
 # The paper's Eq.12/13/17/21 learn the loss weights with NO regulariser. That objective is
@@ -147,6 +161,27 @@ loss_ema_momentum:  0.99
 # It also makes E_train[w] != w_eval, so the train objective and the val/checkpoint objective
 # are different functions. Set to 0.5 to restore the paper's value.
 weight_head_dropout: 0.1
+
+# --- Depth / physics coupling -------------------------------------------------
+# pred_complex = haze(z) + residual. The residual is a full 3-channel decoder and is FAR more
+# expressive than the depth path, so if the complex-image loss L_p is allowed to backprop into
+# the depth head, descent takes the shortcut: drive the depth to a CONSTANT (making haze a
+# trivial global colour transform) and let the residual reconstruct everything. The predicted
+# IMAGE still looks fine; the DEPTH MAP degenerates to a flat field.
+#   Symptom: a WHITE depth panel in TensorBoard, and stats/out_depth_min == out_depth_max.
+#
+# false (default) -> L_p reaches the depth head. This is paper Eq.11 read literally:
+#                    I_Simulated = t(I_Depth)*I + (1-t)*A + I_Residue, so the image loss MUST
+#                    backprop through the transmission t into the depth head — that coupling is
+#                    the "physics-informed" part of the method.
+# true            -> detach (what the original code did). Depth is then supervised only by L_d,
+#                    plus L_t in Techniques 2/3/4 (the loss on the INITIAL DEGRADED image, which
+#                    has no residual term and so cannot be satisfied by a wrong depth).
+#
+# NOTE: the depth-collapse-to-constant bug was NOT caused by this flag — it was lambda_grad
+# (see above), and it reproduced identically with detach ON and OFF. This flag is kept so the
+# coupling can be A/B tested, not as a workaround.
+detach_depth_in_complex: false
 
 # --- Optimisation stability ---------------------------------------------------
 grad_clip_norm:      1.0     # global-norm clip between backward() and step(); 0 disables

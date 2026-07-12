@@ -146,7 +146,11 @@ _DEFAULTS = {
     "lambda_l1": 0.1,
     "lambda_ssim": 0.1,
     "lambda_perc": 0.1,
-    "lambda_grad": 1.0,
+    # 0.25, NOT 1.0. lambda_grad=1.0 (DenseDepth's ratio) CAUSED THE DEPTH HEAD TO COLLAPSE:
+    # DenseDepth's head is an unbounded Conv2d, ours is a bounded scaled sigmoid, and a 10:1
+    # gradient-term weight saturates it within ~10 steps (out_depth pinned at 1.0 forever,
+    # white depth panel, loss/depth frozen). Bisected: 1.0 -> collapse, 0.25/0.1/0.0 -> fine.
+    "lambda_grad": 0.25,
     # NOTE: "lambda_depth" was defined here and read by NOTHING (all 39 train scripts).
     # Removed rather than wired up: the paper's Eq.7 has no such term.
 
@@ -158,6 +162,13 @@ _DEFAULTS = {
     "lambda_weight_reg": 0.01,
     "loss_ema_momentum": 0.99,
     "weight_head_dropout": 0.1,
+
+    # Depth/physics coupling. pred_complex = haze(z) + residual; the residual is far more
+    # expressive than the depth path, so letting L_p backprop into the depth head lets descent
+    # drive depth to a CONSTANT and have the residual do all the work (white depth panel;
+    # out_depth_min == out_depth_max). True = detach (the original behaviour, and the honest
+    # coupling: depth is then anchored by L_d and, in T2/3/4, by L_t which has NO residual).
+    "detach_depth_in_complex": False,
 
     # Optimisation stability
     "grad_clip_norm": 1.0,

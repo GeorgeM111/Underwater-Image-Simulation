@@ -30,7 +30,7 @@ from config import load_config
 from models.model_builder import build_models
 from data.nyu import get_train_loader, get_val_loader
 from utils.helpers import AverageMeter, DepthNorm
-from utils.physics import compute_haze_image, compute_complex_image
+from utils.physics import compute_haze_image, compute_complex_image, depth_for_complex
 from utils.loss import ssim, gradient_loss, VGGPerceptualLoss
 from utils.loss_balance import EMANormalizer, weight_log_barrier
 from utils.tb import make_writer, log_scalars, log_images, log_weights, log_health
@@ -167,7 +167,7 @@ def main():
             # so L_p must backprop through the transmission t into the depth head -- that coupling
             # IS the physics-informed part. Detaching it made model_1 a standalone depth regressor
             # and left the residual head to absorb every depth error.
-            pred_complex = compute_complex_image(out_depth, out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.nyu_max_depth_m)
+            pred_complex = compute_complex_image(depth_for_complex(out_depth, cfg), out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.nyu_max_depth_m)
             pred_haze = compute_haze_image(out_depth, beta, a_val, unit, image_half, max_depth_m=cfg.nyu_max_depth_m)
             w_depth = torch.mean(w_depth, dim=0)
             w_residue = torch.mean(w_residue, dim=0)
@@ -285,7 +285,7 @@ def main():
                 out_depth, w_depth = model_1(image_full)
                 out_bb, w_residue, w_deg = model_2(image_full)
                 out_direct, w_dir = model_3(image_full)
-                pred_complex = compute_complex_image(out_depth, out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.nyu_max_depth_m)
+                pred_complex = compute_complex_image(depth_for_complex(out_depth, cfg), out_bb, beta, a_val, unit, image_half, max_depth_m=cfg.nyu_max_depth_m)
                 pred_haze = compute_haze_image(out_depth, beta, a_val, unit, image_half, max_depth_m=cfg.nyu_max_depth_m)
                 # The val loss uses FIXED lambdas and is UNWEIGHTED -- identical to 'base'.
                 # Scoring with the learned weights let the network lower val_loss without
