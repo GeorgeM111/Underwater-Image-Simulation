@@ -30,7 +30,7 @@ def _csv_row_count(zip_path, csv_name='data/nyu2_train.csv'):
     # Count non-empty rows the SAME way loadZipToMem does (split('\n')), so the
     # split index matches data.nyu exactly.
     with ZipFile(zip_path) as zf:
-        return sum(1 for r in zf.read(csv_name).decode('utf-8').split('\n') if len(r) > 0)
+        return sum(1 for r in zf.read(csv_name).decode('utf-8').splitlines() if len(r) > 0)
 
 
 def main():

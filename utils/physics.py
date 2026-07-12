@@ -394,7 +394,8 @@ def loadZipToMem(zip_file):
     from zipfile import ZipFile
     input_zip = ZipFile(zip_file)
     data = {name: input_zip.read(name) for name in input_zip.namelist()}
-    nyu2_train = list((row.split(',') for row in (data['data/nyu2_train.csv']).decode("utf-8").split('\n')
+    # splitlines(): tolerate CRLF. A stray '\r' on the last field breaks every zip lookup.
+    nyu2_train = list((row.split(',') for row in (data['data/nyu2_train.csv']).decode("utf-8").splitlines()
                        if len(row) > 0))
 
     nyu2_train = shuffle(nyu2_train, random_state=0)

@@ -19,7 +19,7 @@ def _csv_row_count(zip_path, csv_name):
     exactly matches the dataset (avoids IndexError / missing-tail-GT from a
     hard-coded end index if the CSV ever changes)."""
     with ZipFile(zip_path) as zf:
-        return sum(1 for r in zf.read(csv_name).decode('utf-8').split('\n') if len(r) > 0)
+        return sum(1 for r in zf.read(csv_name).decode('utf-8').splitlines() if len(r) > 0)
 
 
 START_IDX = 0

@@ -80,16 +80,47 @@ def main():
                 print('       if divisor = %-8s (%-18s) -> z = %.2f .. %.2f m'
                       % (div, label, zz.min(), zz.max()))
 
+    # ---- FULL SCAN -----------------------------------------------------------------
+    # Sampling a handful proves nothing: it only takes ONE 16-bit image in 50k to hit the
+    # raw-int branch (which skips the /255 normalisation) and to crash under NumPy 2. Scan
+    # every row. Image.open only parses the header here, so this is cheap.
     print('\n---------------------------------------------------------')
-    print(' depth modes seen: %s' % modes)
-    bad = [m for m in modes if m in ('I', 'I;16')]
+    print(' scanning ALL %d rows for PIL modes ...' % len(rows))
+    img_modes, dep_modes = {}, {}
+    offenders = []
+    for i, r in enumerate(rows):
+        try:
+            im = Image.open(BytesIO(data[r[0]])).mode
+            dm = Image.open(BytesIO(data[r[1]])).mode
+        except KeyError as e:
+            print('   row %d: MISSING KEY %r  (CRLF in the CSV? -> use splitlines())' % (i, e.args[0]))
+            break
+        img_modes[im] = img_modes.get(im, 0) + 1
+        dep_modes[dm] = dep_modes.get(dm, 0) + 1
+        if im in ('I', 'I;16') or dm in ('I', 'I;16'):
+            if len(offenders) < 10:
+                offenders.append((i, r[0], im, r[1], dm))
+
+    print('   image modes: %s' % img_modes)
+    print('   depth modes: %s' % dep_modes)
+
+    bad = [m for m in list(img_modes) + list(dep_modes) if m in ('I', 'I;16')]
+    print('---------------------------------------------------------')
     if bad:
-        print(' VERDICT: depth is %s -> the raw-int path is taken -> depth is NOT normalised' % bad)
-        print('          to [0,1]. The GT is being generated from a saturated/constant depth')
-        print('          map. Send this output back before regenerating anything.')
+        print(' VERDICT: %s present -> the RAW-INT path in to_tensor is taken for those images.' % sorted(set(bad)))
+        print('          That path does NOT divide by 255, so they are not normalised to [0,1],')
+        print('          and under NumPy 2 they raise "Unable to avoid copy".')
+        print('          First offenders:')
+        for i, ip, im, dp, dm in offenders:
+            print('            row %-6d image=%-6s %s' % (i, im, ip))
+            print('                       depth=%-6s %s' % (dm, dp))
     else:
-        print(' VERDICT: depth is 8-bit -> the /255 path is taken -> depth IS normalised.')
-        print('          The NumPy-2 crash came from the RGB image side, not depth.')
+        print(' VERDICT: every image is RGB and every depth is 8-bit L across all %d rows.' % len(rows))
+        print('          -> to_tensor always takes the /255 path; depth IS correctly normalised.')
+        print('          -> the raw-int branch is NEVER reached, so the NumPy-2 "copy=False"')
+        print('             error did NOT come from to_tensor. Get the real frame with:')
+        print('               python data_generation/generate_gt_nyu_subset.py --jobs 1 --chunk-size 4')
+        print('             (--jobs 1 stops joblib from swallowing the traceback.)')
     print('---------------------------------------------------------\n')
 
 

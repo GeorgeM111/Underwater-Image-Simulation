@@ -51,7 +51,12 @@ def loadZipToMem(zip_file, csv='data/nyu2_train.csv'):
     from zipfile import ZipFile
     input_zip = ZipFile(zip_file)
     data = {name: input_zip.read(name) for name in input_zip.namelist()}
-    rows = list((row.split(',') for row in (data[csv]).decode("utf-8").split('\n') if len(row) > 0))
+    # splitlines(), NOT split('\n'). The CSVs inside the zip do not all use LF: nyu2_test.csv
+    # is CRLF, so split('\n') leaves a trailing '\r' glued to the last field of every row and
+    # every subsequent zip lookup dies with KeyError: 'data/nyu2_test/01216_depth.png\r'.
+    # splitlines() handles LF, CRLF and lone CR identically. (Row ORDER is unchanged, so the
+    # shuffle(random_state=0) and every positional beta/A/GT index stay exactly as before.)
+    rows = list((row.split(',') for row in (data[csv]).decode("utf-8").splitlines() if len(row) > 0))
     rows = shuffle(rows, random_state=0)
     print('Loaded ({0}).'.format(len(rows)))
     _ZIP_CACHE[key] = (data, rows)
