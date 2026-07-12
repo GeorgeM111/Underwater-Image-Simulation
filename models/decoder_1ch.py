@@ -80,12 +80,20 @@ class Decoder1Ch(nn.Module):
         self.y_min = float(y_min)
         self.y_max = float(y_max)
 
-        # Start the head near a typical NYU depth instead of at an arbitrary point.
-        # y_init = 4 => z = max_depth_m / 4 = 2.5 m, the median NYU scene depth. Small weights
-        # keep the pre-activation close to the bias at init, so the head begins in the
-        # high-gradient region of softplus rather than anywhere near saturation.
+        # BIAS-only init: start the head's MEAN near a typical NYU depth, and leave the WEIGHTS
+        # at torch's default so the head keeps whatever spatial signal the decoder gives it.
+        #
+        # y_init = 4 => z = max_depth_m / 4 = 2.5 m, the median NYU scene depth. Without this the
+        # head starts wherever the bias happens to land, which can be far from any real depth and
+        # forces a long, large-gradient correction — exactly the excursion that used to saturate
+        # the old sigmoid head.
+        #
+        # Do NOT also shrink the weights: the decoder's final features already have very little
+        # spatial variance at init, so the depth map starts out nearly CONSTANT no matter what
+        # (this is true of the original head too, and it is why a white depth panel in the first
+        # epochs is normal). Shrinking the weights on top of that only makes the map flatter and
+        # slows symmetry-breaking. The spread must GROW — watch stats/out_depth_spread.
         with torch.no_grad():
-            nn.init.normal_(self.conv3.weight, mean=0.0, std=1e-3)
             target = max(float(y_init) - self.y_min, 1e-3)
             nn.init.constant_(self.conv3.bias, math.log(math.expm1(target)))  # softplus^-1
 

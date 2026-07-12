@@ -130,13 +130,20 @@ def log_health(writer, epoch, out_depth=None, pred_complex=None, pred_haze=None,
         stats/out_depth_min            -- the depth head's floor. If it walks toward the
                                           bottom of its range the physics is heading for
                                           t = exp(-beta*z) -> 0, i.e. pure airlight.
-        stats/out_depth_frac_at_bound  -- fraction of pixels pinned at either bound. A
-                                          saturating sigmoid means the head has given up.
+        stats/out_depth_frac_at_floor  -- fraction of pixels pinned at the floor (y = 1).
+                                          1.0 means the head is dead: z = max_depth everywhere,
+                                          t -> 0, and the haze image is pure airlight.
+        stats/out_depth_spread         -- max - min. EXACTLY 0 means the depth map is a
+                                          CONSTANT, which is what renders as a white panel.
+                                          Note it is naturally near 0 at init (the decoder's
+                                          final features have little spatial variance) and must
+                                          GROW; a small-but-growing spread is benign, a spread
+                                          stuck at 0 is not.
 
     Plus the prediction ranges, so an exploding residual is visible immediately.
 
-    GATE before launching a sweep: ``out_depth_frac_at_bound`` must stay near 0 and the
-    learned weights (``w_global/*``) must stay above the floor.
+    GATE before launching a sweep: ``out_depth_spread`` must be growing, and the learned
+    weights (``w_global/*``) must stay above the floor.
     """
     stats = {}
     if out_depth is not None:
