@@ -114,7 +114,15 @@ def log_images(writer, epoch, images, max_imgs=4):
         writer.add_image(name, grid, epoch)
 
 
-def log_health(writer, epoch, out_depth=None, pred_complex=None, pred_haze=None, extra=None):
+def _grad_mag(x):
+    """Mean absolute spatial gradient — a scale-free measure of how SHARP an image is."""
+    dy = (x[:, :, 1:, :] - x[:, :, :-1, :]).abs().mean()
+    dx = (x[:, :, :, 1:] - x[:, :, :, :-1]).abs().mean()
+    return dx + dy
+
+
+def log_health(writer, epoch, out_depth=None, pred_complex=None, pred_haze=None,
+               complex_gt=None, extra=None):
     """Log the early-warning scalars for the flat-airlight collapse.
 
     These two are the entire early-warning system and neither existed before:
@@ -150,6 +158,36 @@ def log_health(writer, epoch, out_depth=None, pred_complex=None, pred_haze=None,
         stats['stats/%s_max' % nm] = x.max().item()
         # Fraction of pixels outside the valid image range -> an exploding residual head.
         stats['stats/%s_frac_oob' % nm] = ((x < 0.0) | (x > 1.0)).float().mean().item()
+
+    # --- IS THE RESIDUAL LEARNING THE SCATTERING BLUR? -------------------------------
+    # The classical model (Eq.1) is POINTWISE: haze = J*t + A*(1-t). It cannot produce blur
+    # at any depth, ever. The GT's blur comes from the forward-scattering PSF (Eq.3-4), so the
+    # ONLY component that can reproduce it is the residual head. That is the paper's whole
+    # thesis, and this ratio is how you check whether it is actually happening:
+    #
+    #   sharpness_ratio = |grad(pred_complex)| / |grad(complex_gt)|
+    #       >> 1  -> the prediction is SHARPER than the GT: the residual has not learned the
+    #                blur yet and the output is still essentially the pointwise haze image.
+    #                (Expect this at epoch 1.)
+    #       -> 1  -> the residual has learned the scattering. THIS IS THE THING TO WATCH.
+    #       << 1  -> over-smoothed.
+    #
+    # Also logged: how much of the prediction the residual actually contributes. If
+    # residual_rel_energy stays ~0, the residual branch is dead and the model has collapsed
+    # back onto the plain haze model (i.e. Technique-1 degenerates into Eq.1 alone).
+    if pred_complex is not None and complex_gt is not None:
+        p = pred_complex.detach().float()
+        g = complex_gt.detach().float()
+        gg = _grad_mag(g)
+        if gg > 1e-8:
+            stats['stats/sharpness_ratio'] = (_grad_mag(p) / gg).item()
+        if pred_haze is not None:
+            h = pred_haze.detach().float()
+            resid = p - h                      # == out_bb
+            denom = p.abs().mean()
+            if denom > 1e-8:
+                stats['stats/residual_rel_energy'] = (resid.abs().mean() / denom).item()
+
     if extra:
         stats.update(extra)
     log_scalars(writer, epoch, stats)

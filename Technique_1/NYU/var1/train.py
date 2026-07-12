@@ -246,7 +246,8 @@ def main():
         log_images(writer, epoch, _tb_images)
         # Early-warning system for the flat-airlight collapse (out_depth pinned at a bound
         # => t = exp(-beta*z) -> 0 => the physics degenerates to pure airlight).
-        log_health(writer, epoch, out_depth=out_depth, pred_complex=pred_complex, pred_haze=pred_haze)
+        log_health(writer, epoch, out_depth=out_depth, pred_complex=pred_complex,
+                   pred_haze=pred_haze, complex_gt=complex_gt)
         writer.flush()
         # ---- validation on held-out split (drives checkpointing + early stopping) ----
         model_1.eval()

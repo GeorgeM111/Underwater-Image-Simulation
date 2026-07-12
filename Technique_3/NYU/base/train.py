@@ -204,7 +204,8 @@ def main():
                       'direct/pred': out_direct}
         log_images(writer, epoch, _tb_images)
         # Early-warning system for the flat-airlight collapse: watch out_depth_frac_at_bound.
-        log_health(writer, epoch, out_depth=out_depth, pred_complex=pred_complex, pred_haze=pred_haze)
+        log_health(writer, epoch, out_depth=out_depth, pred_complex=pred_complex,
+                   pred_haze=pred_haze, complex_gt=complex_gt)
         writer.flush()
         # ---- validation on held-out split (drives checkpointing + early stopping) ----
         model_1.eval()
