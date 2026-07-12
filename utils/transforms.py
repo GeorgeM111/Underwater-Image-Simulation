@@ -129,9 +129,9 @@ class ToTensor(object):
             return img.float().div(255)
 
         if pic.mode == 'I':
-            img = torch.from_numpy(np.array(pic, np.int32, copy=False))
+            img = torch.from_numpy(np.array(pic, dtype=np.int32))
         elif pic.mode == 'I;16':
-            img = torch.from_numpy(np.array(pic, np.int16, copy=False))
+            img = torch.from_numpy(np.array(pic, dtype=np.int16))
         else:
             img = torch.ByteTensor(torch.ByteStorage.from_buffer(pic.tobytes()))
         if pic.mode == 'YCbCr':
