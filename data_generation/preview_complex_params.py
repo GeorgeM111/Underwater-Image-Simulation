@@ -79,6 +79,14 @@ def main():
                     help='explicit gamma_angular triple (overrides --gamma-scale)')
     ap.add_argument('--alpha-metric', type=float, nargs=3, default=None,
                     help='explicit alpha_metric triple')
+    ap.add_argument('--clarity', type=float, default=None,
+                    help='override nyu_water_clarity (TURBIDITY: higher = murkier). Scales beta, '
+                         'alpha and gamma together.')
+    ap.add_argument('--airlight-min', type=float, default=None,
+                    help='override nyu_airlight_brightness_min AND RESAMPLE the airlight for the '
+                         'previewed images. The veil is (1-t)*A, so a dark A adds nothing and the '
+                         'result is a colour grade, not an underwater scene. Use this to eyeball a '
+                         'new floor WITHOUT regenerating the A_Mat parameter matrices.')
     ap.add_argument('--out', default=None, help='output dir (default: <repo>/preview_complex)')
     args = ap.parse_args()
 
@@ -89,6 +97,10 @@ def main():
         CONFIG.gamma_angular = [g * args.gamma_scale for g in CONFIG.gamma_angular]
     if args.alpha_metric is not None:
         CONFIG.alpha_metric = list(args.alpha_metric)
+    if args.clarity is not None:
+        CONFIG.nyu_water_clarity = float(args.clarity)
+    if args.airlight_min is not None:
+        CONFIG.nyu_airlight_brightness_min = float(args.airlight_min)
 
     out_dir = args.out or _os.path.join(_REPO_ROOT, 'preview_complex')
     _os.makedirs(out_dir, exist_ok=True)
@@ -136,9 +148,17 @@ def main():
         image_half_np = np.swapaxes(image_half_np, 0, 2)
         image_half_np = np.swapaxes(image_half_np, 0, 1)   # (H,W,3) 0-1
 
-        if have_params:
+        if have_params and args.airlight_min is None:
             beta_mat = list(beta_mat_arr[idx])
             a_mat = list(a_mat_arr[idx])
+        elif have_params:
+            # Keep this image's real water type, but RESAMPLE the airlight under the new floor.
+            # The stored A_Mat was drawn with the OLD floor, so without this the preview would
+            # still show the dark, veil-less airlights that make the GT look like a colour grade.
+            beta_mat = list(beta_mat_arr[idx])
+            random.seed(int(getattr(CONFIG, 'random_seed', 42)) + idx)
+            a_mat = _water_airlight(
+                random.uniform(CONFIG.nyu_airlight_brightness_min, 1.0), beta_mat)
         else:
             beta_mat = list(random.choice(CONFIG.jerlov_water_types))
             a_mat = _water_airlight(random.uniform(CONFIG.nyu_airlight_brightness_min, 1.0), beta_mat)

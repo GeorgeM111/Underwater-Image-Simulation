@@ -196,7 +196,17 @@ airlight_bg_depth: 150.0
 # split never changes the other's colours. Raising the floor stops ~30% of images
 # being dark/murky. Only affects the split you regenerate (params + GT). Back to 0.0
 # + regenerate == exact original matrices (RNG sequence is floor-independent).
-nyu_airlight_brightness_min:    0.0    # keep 0.0 to match existing NYU GT (floor-0)
+# Airlight (veiling light) brightness ~ Uniform(min, 1.0), sampled PER IMAGE.
+#
+# NYU floor raised 0.0 -> 0.6. The veil term in Eq.1 is (1 - t) * A, so a DARK airlight adds
+# essentially nothing: the image gets colour REMOVED (absorption) with nothing ADDED, and the
+# result is a tinted-but-clear photo with dark, sharp shadows — a colour grade, not an
+# underwater scene. With min=0.0 a third of images drew A < 0.33 and looked exactly like that.
+# Real underwater backscatter is BRIGHT — it is what washes out contrast and turns shadows
+# milky. A floor of 0.6 guarantees a visible veil on every image while still leaving variety
+# in [0.6, 1.0].
+# CHANGING THIS REQUIRES REGENERATING THE PARAMETER MATRICES (A_Mat) *AND* THE GT.
+nyu_airlight_brightness_min:    0.6
 make3d_airlight_brightness_min: 0.5    # applies on the NEXT Make3D params+GT regen
 # Complex forward-model version. "ricardo" = original code behind the paper's figures.
 # "v2" = corrected: untruncated Gaussian PSF (the fixed 21x21 window degenerated into a
@@ -249,8 +259,15 @@ complex_depth_mode: "metric"
 # scattering coefficient legitimately exceeds these betas. Forcing alpha <= beta would
 # drive k -> 1, kill the scatter term, and collapse the complex GT onto the classical haze
 # GT — i.e. a PURE blue filter, strictly worse.
-gamma_angular: [0.0042, 0.0045, 0.0048]  # rad/m — near-flat, blue slightly wider
-alpha_metric:  [0.45,   0.50,   0.55  ]  # 1/m   — scattered fraction; blue-heavy (Rayleigh)
+#
+# NOTE ON THE 3x: these are the previously-chosen values DIVIDED BY 3, because
+# nyu_water_clarity was raised 1.0 -> 3.0 below. Clarity multiplies beta AND alpha AND gamma
+# together, so gamma_eff = focal * gamma_angular * clarity and alpha_eff = alpha_metric *
+# clarity are UNCHANGED — the blur and the scattered fraction are bit-for-bit what they were.
+# Only beta_eff (the transmission) goes up 3x. Do not "simplify" these back to the round
+# numbers without also putting clarity back to 1.0, or the GT will suddenly get 3x blurrier.
+gamma_angular: [0.0014, 0.0015, 0.0016]  # rad/m — x clarity(3) => same PSF as before
+alpha_metric:  [0.15,   0.167,  0.183 ]  # 1/m   — x clarity(3) => same scattered fraction
 # Focal length in PIXELS at each dataset's GT (half) resolution
 nyu_focal_px:    259.43   # NYU-v2 official fx 518.8579 @640 -> /2
 kitti_focal_px:  360.77   # KITTI P_rect_02 fx ~721.54 @1242; crop keeps f -> /2
@@ -259,7 +276,17 @@ make3d_focal_px: 246.60   # Make3D ships NO intrinsics -> assumed 50 deg HFOV @2
 # = fewer absorption AND scattering events). Replaces the old *_haze_beta_scale, which
 # scaled only beta. NYU = 1.0 (reference); Make3D/KITTI simulated under 8x clearer water
 # so their 0-80 m scenes don't extinguish (same reason as Option-B).
-nyu_water_clarity:    1.0
+# TURBIDITY multiplier (the name is backwards: LOWER = clearer water). Scales beta, alpha and
+# gamma together.
+#
+# NYU = 3.0, not 1.0. NYU is an INDOOR dataset: scenes sit at 1-5 m. At clarity 1.0 with real
+# oceanic Jerlov coefficients the blue channel still transmits 86% of the scene at 3 m and the
+# veil is only 14% — i.e. red is removed and nothing is added, which is a COLOUR FILTER, not an
+# underwater image. Real underwater photos lose contrast because bright backscatter is ADDED
+# over the scene. To get that at indoor distances the water has to be genuinely turbid
+# (harbour/coastal), which is what 3.0 represents: t_blue(3 m) 0.86 -> 0.64, veil 14% -> 36%.
+# Make3D/KITTI are the opposite problem (0-80 m scenes), hence 0.125 = 8x clearer.
+nyu_water_clarity:    3.0
 make3d_water_clarity: 0.125
 kitti_water_clarity:  0.125
 # --- Eq.6 particle field (LIVE on the v2/metric path) -------------------------

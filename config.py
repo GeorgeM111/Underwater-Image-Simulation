@@ -204,7 +204,10 @@ _DEFAULTS = {
     # raising the floor avoids near-black/murky GT. REVERSIBLE: the RNG sequence is
     # floor-independent (uniform draws one random() regardless), so 0.0 + regenerate
     # reproduces the original matrices exactly.
-    "nyu_airlight_brightness_min": 0.0,
+    # 0.6, not 0.0. The veil is (1-t)*A, so a DARK airlight adds nothing: colour is removed
+    # and nothing is added -> a tinted-but-clear photo (a colour grade, not an underwater
+    # scene). Real backscatter is BRIGHT. Changing this REQUIRES regenerating A_Mat + GT.
+    "nyu_airlight_brightness_min": 0.6,
     "make3d_airlight_brightness_min": 0.0,
     # Complex (ricardo) forward-model version:
     #   "ricardo" -> the original code that produced the paper's figures
@@ -225,10 +228,11 @@ _DEFAULTS = {
     # blur differs only because the CAMERAS differ (focal length) and because a dataset
     # may be simulated under clearer water (clarity). Calibrated so NYU reproduces its
     # previous look (sigma=25.5px at z=10m, f=259.4).
-    "gamma_angular": [0.0042, 0.0045, 0.0048],            # rad/m — near-flat; blue slightly WIDER (see config.yaml)
+    # x nyu_water_clarity(3.0) => the SAME PSF/scattered-fraction as before; only beta rises.
+    "gamma_angular": [0.0014, 0.0015, 0.0016],            # rad/m (see config.yaml)
     # Straight-path attenuation k_c = exp(-alpha_metric_c * z_m * clarity). Calibrated
     # from the old 0-255-axis alpha: alpha_metric = alpha * 255 / nyu_max_depth_m.
-    "alpha_metric": [0.45, 0.50, 0.55],                   # 1/m — scattered fraction; blue-heavy (Rayleigh)
+    "alpha_metric": [0.15, 0.167, 0.183],                 # 1/m (see config.yaml)
     # Focal length in PIXELS at the GT (half) resolution of each dataset.
     "nyu_focal_px": 259.43,      # NYU-v2 official fx 518.8579 @640 wide -> /2
     "kitti_focal_px": 360.77,    # KITTI P_rect_02 fx ~721.54 @1242 wide; crop keeps f -> /2
@@ -236,7 +240,12 @@ _DEFAULTS = {
     # Water clarity per dataset. Multiplies beta, alpha AND gamma together — "clearer
     # water" means fewer absorption *and* scattering events. Replaces the old
     # *_haze_beta_scale (which only scaled beta, an inconsistency).
-    "nyu_water_clarity": 1.0,
+    # TURBIDITY multiplier (lower = clearer). NYU is INDOOR: scenes are 1-5 m, so at 1.0 the
+    # blue channel still transmits 86% of the scene at 3 m and the veil is only 14% -> a
+    # colour filter. 3.0 = genuinely turbid harbour/coastal water, which is what indoor
+    # distances need to read as underwater. Scales beta AND alpha AND gamma, so
+    # gamma_angular/alpha_metric above were divided by 3 to keep the blur unchanged.
+    "nyu_water_clarity": 3.0,
     "make3d_water_clarity": 0.125,
     "kitti_water_clarity": 0.125,
     # ---- legacy (0-255-axis) coefficients, used only when complex_depth_mode=normalized
