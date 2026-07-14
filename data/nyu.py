@@ -183,7 +183,8 @@ class depthDatasetMemory(Dataset):
 
 
 def _build_full_dataset(config, transform, csv='data/nyu2_train.csv',
-                        beta_path=None, a_path=None, gt_dir=None, augment=False):
+                        beta_path=None, a_path=None, gt_dir=None, augment=False,
+                        required_indices=None):
     """Build the full NYU dataset for a given CSV / parameter-matrix / GT dir.
 
     Defaults reproduce the training split (nyu2_train.csv + *_NYU_train params +
@@ -194,7 +195,11 @@ def _build_full_dataset(config, transform, csv='data/nyu2_train.csv',
     beta_mat_arr = load(beta_path or config.beta_mat_nyu_train)
     a_mat_arr = load(a_path or config.a_mat_nyu_train)
     resolved_gt = gt_dir or config.nyu_gt_train_dir
-    check_physics_manifest(resolved_gt, config)
+    # Pass the indices we are about to READ. The physics hash alone is NOT enough: a
+    # subset-only regeneration stamps a fresh manifest while the test-TAIL files in the same
+    # directory are still the old physics, so a hash-only check compares fresh-against-fresh
+    # and waves the stale files through.
+    check_physics_manifest(resolved_gt, config, required_indices=required_indices)
     return depthDatasetMemory(data, rows, beta_mat_arr, a_mat_arr,
                               gt_dir=resolved_gt, transform=transform,
                               augment=augment)
@@ -249,8 +254,9 @@ def get_train_loader(config):
     never leak in, and the last ``nyu_val_ratio`` of the pool is reserved for
     validation (same contract as data.make3d).
     """
-    full = _build_full_dataset(config, getDefaultTrainTransform(), augment=True)
     train_idx, val_idx, tag, split_idx = _train_val_indices(config)
+    full = _build_full_dataset(config, getDefaultTrainTransform(), augment=True,
+                               required_indices=train_idx)
     print("[data.nyu] train mode=%s  train=%d  val=%d  (pool clipped to [0,%d))"
           % (tag, len(train_idx), len(val_idx), split_idx))
     return DataLoader(Subset(full, train_idx), config.batch_size_nyu, shuffle=True, drop_last=True,
@@ -263,8 +269,9 @@ def get_val_loader(config):
 
     Drives checkpoint selection + early stopping, exactly like data.make3d.get_val_loader.
     """
-    full = _build_full_dataset(config, getNoTransform(), augment=False)
     _, val_idx, _, _ = _train_val_indices(config)
+    full = _build_full_dataset(config, getNoTransform(), augment=False,
+                               required_indices=val_idx)
     return DataLoader(Subset(full, val_idx), config.batch_size_nyu, shuffle=False, drop_last=False,
                       num_workers=config.num_workers, pin_memory=True,
                       persistent_workers=config.num_workers > 0)
@@ -294,9 +301,14 @@ def get_test_loader(config):
         return DataLoader(full, config.batch_size_nyu, shuffle=False, drop_last=False,
                           num_workers=config.num_workers)
 
-    full = _build_full_dataset(config, getNoTransform(is_test=True))
-    split_idx = int(config.train_split_ratio * len(full))
-    test_subset = Subset(full, list(range(split_idx, len(full))))
+    # Resolve the tail indices BEFORE building, so the provenance guard can assert their GT
+    # was actually written by the current physics (this is the exact set that goes stale when
+    # the subset is regenerated without --with-test-tail).
+    _data, _rows = loadZipToMem(config.nyu_zip_path)
+    split_idx = int(config.train_split_ratio * len(_rows))
+    tail_idx = list(range(split_idx, len(_rows)))
+    full = _build_full_dataset(config, getNoTransform(is_test=True), required_indices=tail_idx)
+    test_subset = Subset(full, tail_idx)
     print("[data.nyu] test mode=tail  using held-out tail (%d images)" % len(test_subset))
     return DataLoader(test_subset, config.batch_size_nyu, shuffle=False, drop_last=False,
                       num_workers=config.num_workers)

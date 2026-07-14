@@ -29,7 +29,7 @@ import joblib
 from joblib import Parallel, delayed
 
 from config import load_config
-from data_2 import generate_and_save_haze_image
+from data_2 import generate_and_save_haze_image, write_physics_manifest
 
 
 def _resolve_indices_path(cfg, override):
@@ -109,6 +109,7 @@ def main():
               % (len(indices), cfg.nyu_gt_train_dir))
         t0 = time.time()
         generate_and_save_haze_image(0, 0, indices=indices)
+        write_physics_manifest(cfg.nyu_gt_train_dir, covered_indices=[int(i) for i in indices])
         print("Done in %.1fs — no error. The pipeline works on these indices." % (time.time() - t0))
         return
 
@@ -130,6 +131,11 @@ def main():
     t0 = time.time()
     with Parallel(n_jobs=jobs) as parallel:
         parallel(delayed(generate_and_save_haze_image)(0, 0, indices=chunk) for chunk in chunks)
+
+    # Parent-side, once, after every chunk succeeded (workers are separate processes and would
+    # race on the manifest's read-modify-write). Coverage is UNIONed with any previous run at the
+    # same physics hash, so 'subset now, tail later' still ends up fully covered.
+    write_physics_manifest(cfg.nyu_gt_train_dir, covered_indices=[int(i) for i in indices])
     print("Total computation time : %.1fs" % (time.time() - t0))
 
 

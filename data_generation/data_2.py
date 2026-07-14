@@ -51,8 +51,8 @@ def physics_fingerprint(cfg=None):
     return _fingerprint(cfg if cfg is not None else CONFIG)
 
 
-def write_physics_manifest(gt_dir, cfg=None):
-    return _write_manifest(gt_dir, cfg if cfg is not None else CONFIG)
+def write_physics_manifest(gt_dir, cfg=None, covered_indices=None):
+    return _write_manifest(gt_dir, cfg if cfg is not None else CONFIG, covered_indices)
 
 
 def _paired_make3d_files(img_dir, depth_dir):
@@ -356,11 +356,14 @@ def generate_and_save_haze_image(stIndex, endIndex, indices=None):
     are then ignored. Otherwise the contiguous range [stIndex, endIndex) is used.
     """
     _os.makedirs(CONFIG.nyu_gt_train_dir, exist_ok=True)
-    write_physics_manifest(CONFIG.nyu_gt_train_dir)
     data, nyu_dataset = loadZipToMem(CONFIG.nyu_zip_path)
     a_mat_arr = load(_os.path.join(_PARAMS_DIR, 'A_Mat_NYU_train.npy'))
     beta_mat_arr = load(_os.path.join(_PARAMS_DIR, 'Beta_Mat_NYU_train.npy'))
-    targets = list(indices) if indices is not None else range(stIndex, endIndex)
+    # NOTE: the manifest is written by the ENTRY-POINT script (the parent), NOT here. This
+    # function runs inside joblib worker PROCESSES, and the manifest's read-modify-write of
+    # covered_indices would race across them and lose coverage. The parent writes it once, after
+    # every chunk has completed, with the full index list.
+    targets = list(indices) if indices is not None else list(range(stIndex, endIndex))
     for idx in targets:
         idx = int(idx)
         sample = nyu_dataset[idx]
@@ -451,7 +454,14 @@ def generate_and_save_haze_image(stIndex, endIndex, indices=None):
         # which biased the complex GT by -0.5 gray levels relative to the float haze GT and
         # made the residual head learn that constant offset as if it were physics).
         # data.nyu._load_gt dispatches on dtype, so old float dirs still load correctly.
-        save(haze_image_name, np.asarray(haze_image, dtype=np.float32))
+        # BOTH as uint8. haze is a convex combination of J and A so it is exactly in [0,1];
+        # 1/255 quantisation is a 0.004 noise floor, far below the ~0.02-0.05 MAE the model
+        # achieves. Storage for the FULL 50688-image dataset: float32 haze would be 58 GB,
+        # uint8 for both is 23 GB. np.rint = round (the old .astype(uint8) FLOORED, biasing the
+        # target by -0.5 gray levels). data/nyu._load_gt dispatches on dtype, so old float dirs
+        # still load correctly.
+        save(haze_image_name,
+             np.rint(np.clip(haze_image, 0.0, 1.0) * 255.0).astype(np.uint8))
         save(complex_haze_image_name,
              np.rint(np.clip(complex_noisy_img, 0.0, 1.0) * 255.0).astype(np.uint8))
 
@@ -549,7 +559,14 @@ def generate_and_save_haze_image_test(stIndex, endIndex):
         # orig_image_name =  "/sandbox1/gmoussa/ground_truth/nyu/test/" +  str(idx) + "orig_image" + ".npy"
 
         # Same compact, round-not-floor encoding as the train split (see there).
-        save(haze_image_name, np.asarray(haze_image, dtype=np.float32))
+        # BOTH as uint8. haze is a convex combination of J and A so it is exactly in [0,1];
+        # 1/255 quantisation is a 0.004 noise floor, far below the ~0.02-0.05 MAE the model
+        # achieves. Storage for the FULL 50688-image dataset: float32 haze would be 58 GB,
+        # uint8 for both is 23 GB. np.rint = round (the old .astype(uint8) FLOORED, biasing the
+        # target by -0.5 gray levels). data/nyu._load_gt dispatches on dtype, so old float dirs
+        # still load correctly.
+        save(haze_image_name,
+             np.rint(np.clip(haze_image, 0.0, 1.0) * 255.0).astype(np.uint8))
         save(complex_haze_image_name,
              np.rint(np.clip(complex_noisy_img, 0.0, 1.0) * 255.0).astype(np.uint8))
 
@@ -1102,8 +1119,15 @@ class ToTensor(object):
     def __call__(self, sample):
         image, depth = sample['image'], sample['depth']
 
-        image_half = image.resize((320, 240))  # now it is PIL image, hence we can resize the image
-        depth_half = depth.resize((320, 240))
+        # MUST match utils/transforms.ToTensor EXACTLY. The GT is rendered from THIS depth map,
+        # while the network trains against the LOADER's. PIL's default for mode-L is BICUBIC, which
+        # OVERSHOOTS at depth discontinuities and invents depths present in neither the foreground
+        # nor the background (an 8-bit step edge 0->255 resamples to 0,52,203,255). A generator/loader
+        # mismatch makes the GT's transmission t = exp(-beta*z) UNREPRODUCIBLE at every object
+        # boundary: L_d and L_t then pull against each other along every edge and a permanent
+        # residual error sits exactly on the boundaries.
+        image_half = image.resize((320, 240), resample=Image.BICUBIC)
+        depth_half = depth.resize((320, 240), resample=Image.NEAREST)
 
         image_half_norm_0_1 = self.to_tensor(image_half).float()
         image_norm_0_1 = self.to_tensor(image).float()
@@ -1157,8 +1181,15 @@ class ToTensor(object):
 def ToTensorCustom(sample, is_test):
     image, depth = sample['image'], sample['depth']
 
-    image_half = image.resize((320, 240))  # now it is PIL image, hence we can resize the image
-    depth_half = depth.resize((320, 240))
+    # MUST match utils/transforms.ToTensor EXACTLY. The GT is rendered from THIS depth map,
+    # while the network trains against the LOADER's. PIL's default for mode-L is BICUBIC, which
+    # OVERSHOOTS at depth discontinuities and invents depths present in neither the foreground
+    # nor the background (an 8-bit step edge 0->255 resamples to 0,52,203,255). A generator/loader
+    # mismatch makes the GT's transmission t = exp(-beta*z) UNREPRODUCIBLE at every object
+    # boundary: L_d and L_t then pull against each other along every edge and a permanent
+    # residual error sits exactly on the boundaries.
+    image_half = image.resize((320, 240), resample=Image.BICUBIC)
+    depth_half = depth.resize((320, 240), resample=Image.NEAREST)
 
     image_half_norm_0_1 = to_tensor_custom(image_half).float()
     image_norm_0_1 = to_tensor_custom(image).float()

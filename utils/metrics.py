@@ -81,8 +81,22 @@ def add_results_1(gt_image, pred_image, border_crop_size=16, use_224=False, targ
     a resize to NYU's (480, 640) for BOTH datasets, upsampling Make3D ~2.7x.)
     """
     hb = border_crop_size // 2
-    gt = gt_image[:, :, hb:-hb, hb:-hb]
-    pred = pred_image[:, :, hb:-hb, hb:-hb]
+    if hb > 0:
+        gt = gt_image[:, :, hb:-hb, hb:-hb]
+        pred = pred_image[:, :, hb:-hb, hb:-hb]
+    else:
+        gt, pred = gt_image, pred_image
+
+    # Clamp to the valid image range, EXACTLY as image_quality does.
+    #
+    # pred_complex = haze + residual, and the residual head is unbounded, so predictions
+    # routinely leave [0, 1]. Without this clamp, `image_quality` (which DOES clamp) and
+    # `add_results_1` scored DIFFERENT VALUE RANGES in the same results row, and the ratio
+    # metrics were penalised on pixels that cannot exist in any image you would actually
+    # look at or save — every renderer clips them anyway. Scoring an out-of-gamut value is
+    # measuring an artefact of the parameterisation, not of the reconstruction.
+    gt = gt.clamp(0, 1)
+    pred = pred.clamp(0, 1)
 
     if target_size is not None:
         import torch.nn.functional as F

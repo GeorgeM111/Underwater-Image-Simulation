@@ -68,18 +68,32 @@ else
     echo "[1/3] params  — SKIPPED (SKIP_PARAMS=1)"
 fi
 
-if [ "$SKIP_FILTER" != "1" ]; then
-    echo ""
-    echo "[2/3] informative-subset selection"
-    python data_generation/filter_nyu_subset.py --config "$CONFIG"
-else
-    echo ""
-    echo "[2/3] filter  — SKIPPED (SKIP_FILTER=1)"
-fi
+TRAIN_MODE="$(python -c 'from config import CONFIG; print(CONFIG.nyu_train_mode)')"
 
-echo ""
-echo "[3/3] ground truth: training subset + HELD-OUT TEST TAIL"
-python data_generation/generate_gt_nyu_subset.py --config "$CONFIG" --with-test-tail
+if [ "$TRAIN_MODE" = "all" ]; then
+    echo ""
+    echo "[2/3] informative-subset selection — SKIPPED (nyu_train_mode='all')"
+    echo ""
+    echo "[3/3] ground truth: the FULL dataset (all 50,688 indices)"
+    echo "      This covers the 96% training pool AND the 4% test tail by construction, so the"
+    echo "      stale-tail failure mode cannot occur. ~23 GB on disk (both GTs are uint8)."
+    python data_generation/generate_gt_nyu_train.py
+else
+    if [ "$SKIP_FILTER" != "1" ]; then
+        echo ""
+        echo "[2/3] informative-subset selection"
+        python data_generation/filter_nyu_subset.py --config "$CONFIG"
+    else
+        echo ""
+        echo "[2/3] filter  — SKIPPED (SKIP_FILTER=1)"
+    fi
+
+    echo ""
+    echo "[3/3] ground truth: training subset + HELD-OUT TEST TAIL"
+    echo "      --with-test-tail is NOT optional: the subset generator writes only TRAINING"
+    echo "      indices, but the test loader reads the TAIL."
+    python data_generation/generate_gt_nyu_subset.py --config "$CONFIG" --with-test-tail
+fi
 
 echo ""
 echo "=============================================================="

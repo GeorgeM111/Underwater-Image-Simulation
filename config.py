@@ -96,14 +96,14 @@ _DEFAULTS = {
     "checkpoint_dir": "${PROJECT_OUT}/checkpoints",
     "runs_dir": "${PROJECT_OUT}/runs",
     # Training
-    "batch_size_nyu": 16,
+    "batch_size_nyu": 32,
     "batch_size_make3d": 5,
     "epochs": 50,
-    "learning_rate": 1.0e-4,
+    "learning_rate": 1.4e-4,   # sqrt-scaled for batch 32; scale by sqrt(bs/16)*1e-4
     # GAN baselines (Pix2Pix / CycleGAN) use the canonical 2e-4 (Isola/Zhu et al.),
     # not the DenseDepth transfer-learning 1e-4 the Technique_* models use.
     "gan_learning_rate": 2.0e-4,
-    "early_stopping_patience": 5,
+    "early_stopping_patience": 8,
     "train_split_ratio": 0.96,
     "num_workers": 8,
     "n_parallel_jobs": 6,
@@ -129,7 +129,7 @@ _DEFAULTS = {
     #                   "subset" -> only the filtered indices below
     #   nyu_subset_indices: path to the indices .npy; None -> auto
     #                       ({nyu_subset_size}_filtered_nyu.npy in the params dir)
-    "nyu_train_mode": "subset",
+    "nyu_train_mode": "all",
     "nyu_subset_indices": None,
     # NYU test set selection (data.nyu.get_test_loader):
     #   "tail"     -> held-out tail of nyu2_train (paper's 96/4 protocol; DEFAULT)

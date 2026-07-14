@@ -200,7 +200,15 @@ def main():
             # Log-barrier: sum_i w_i L_i is linear in w even after normalisation, so the
             # vertex (w -> 0 on some term) is still the exact minimiser. -sum(log w) makes it
             # infinitely costly. TRAINING ONLY — never in the val score.
-            total_loss = total_loss + cfg.lambda_weight_reg * weight_log_barrier(w_global, w_depth, w_bb, w_dir)
+            # Each SIGMOID weight enters as the PAIR (w, 1-w): w*L1 + (1-w)*SSIM. BOTH
+            # coefficients are learned loss weights, so BOTH must be kept off zero. Passing
+            # only w makes -log(w) a monotone push toward w -> 1, which STARVES the SSIM
+            # terms -- the exact failure the barrier exists to prevent, just in the other
+            # direction. w_depth[1] is emitted by the shared 2-output head but consumed by
+            # no loss, so it is deliberately left un-regularised.
+            total_loss = total_loss + cfg.lambda_weight_reg * weight_log_barrier(
+                w_global, w_depth[:1], 1.0 - w_depth[:1], w_bb, 1.0 - w_bb,
+                w_dir[:1], 1.0 - w_dir[:1])
 
             # Skip BEFORE the meters: a NaN batch that reached meter.update() poisoned the
             # running mean for the whole epoch, so the logged curve went NaN and stayed NaN.

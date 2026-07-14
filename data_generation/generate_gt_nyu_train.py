@@ -11,7 +11,7 @@ from joblib import Parallel, delayed
 from zipfile import ZipFile
 
 from config import CONFIG
-from data_2 import generate_and_save_haze_image
+from data_2 import generate_and_save_haze_image, write_physics_manifest
 
 
 def _csv_row_count(zip_path, csv_name):
@@ -42,7 +42,15 @@ def main():
     t0 = time.time()
     with Parallel(n_jobs=n_cpu) as parallel:
         parallel(delayed(generate_and_save_haze_image)(st, en) for st, en in chunks)
+
+    # Manifest written by the PARENT, once, AFTER every chunk succeeded. The workers are separate
+    # processes, so a per-worker read-modify-write of covered_indices would race and lose coverage.
+    # Writing it only on success also means a crashed run leaves NO manifest -> the loader warns
+    # instead of trusting a half-finished directory.
+    write_physics_manifest(CONFIG.nyu_gt_train_dir,
+                           covered_indices=list(range(START_IDX, END_IDX)))
     print(f"Total computation time : {time.time() - t0:.1f}s")
+    print(f"Covered indices [{START_IDX}, {END_IDX}) -- the FULL dataset (train pool + test tail).")
 
 
 if __name__ == "__main__":

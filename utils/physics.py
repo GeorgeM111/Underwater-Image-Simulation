@@ -109,7 +109,7 @@ def compute_complex_image(output_depth, output_black_box, beta_val, a_mat, unit_
 def depth_for_complex(out_depth, cfg=None):
     """The depth tensor to feed into the COMPLEX branch — detached or not.
 
-    THE TRADE-OFF (config key ``detach_depth_in_complex``, default True):
+    THE TRADE-OFF (config key ``detach_depth_in_complex``, default False):
 
     ``pred_complex = haze(z) + residual``. The residual is a full 3-channel decoder and is
     vastly more expressive than the depth path. So if L_p (the complex-image loss) is allowed
@@ -129,7 +129,7 @@ def depth_for_complex(out_depth, cfg=None):
     """
     if cfg is None:
         cfg = CONFIG
-    return out_depth.detach() if bool(getattr(cfg, 'detach_depth_in_complex', True)) else out_depth
+    return out_depth.detach() if bool(getattr(cfg, 'detach_depth_in_complex', False)) else out_depth
 
 
 # =============================================================================

@@ -62,16 +62,23 @@ checkpoint_dir: "${PROJECT_OUT}/checkpoints"
 runs_dir:       "${PROJECT_OUT}/runs"
 
 # --- Training -----------------------------------------------------------------
-batch_size_nyu:          16
+# batch 32 + lr 1.4e-4 (sqrt-scaled from the DenseDepth reference of Adam @ 1e-4, batch 16).
+# On the FULL 46,227-image training split that is 1,444 steps/epoch => 72k updates over 50
+# epochs, which is ample. This architecture IS DenseDepth, so staying near its proven regime
+# is the safe choice; a larger batch mostly buys wall-clock at the cost of updates.
+#   bs 64 -> lr 2.0e-4 (722 steps/epoch)  -- fine, faster
+#   bs 90 -> lr 2.4e-4 (513 steps/epoch)  -- only 26k updates; the residual learns the
+#                                            scattering blur LAST, so do not starve it.
+# If you change batch_size_nyu, scale learning_rate by sqrt(new/16) * 1e-4.
+batch_size_nyu:          32
 batch_size_make3d:       5
 epochs:                  50
-learning_rate:           1.0e-4    # DenseDepth-style transfer-learning LR. The paper's
-                                   # supplementary used 1e-6, which (together with the old
-                                   # loss weighting) left the depth head essentially at its
-                                   # initialisation -> blurry depth. 1e-4 is the standard value.
+learning_rate:           1.4e-4    # sqrt-scaled for batch 32 (see above). The paper's 1e-6 is
+                                   # ~100x too low for this architecture and leaves the depth head
+                                   # near its initialisation.
 gan_learning_rate:       2.0e-4    # canonical Pix2Pix/CycleGAN LR (Isola/Zhu et al.); GAN
                                    # baselines use this instead of the 1e-4 above.
-early_stopping_patience: 5
+early_stopping_patience: 8     # the residual learns the scattering blur LATE; give it room
 train_split_ratio:       0.96
 num_workers:             8     # H200 node has 64 cores; raise for faster data loading (was 4)
 n_parallel_jobs:         6     # for GT pre-computation; each worker loads the full ~5GB NYU zip, so keep low to avoid OOM
@@ -102,7 +109,11 @@ nyu_subset_ssim_thumb:     32
 #                   "subset" -> only the indices in nyu_subset_indices
 # nyu_subset_indices: path to the .npy of indices; leave blank to auto-use
 #   {nyu_subset_size}_filtered_nyu.npy in the parameters dir.
-nyu_train_mode:     "subset" # "subset"-> train on filtered subsets | "all" - train on the whole dataset
+# "all" = the paper's protocol: the FULL 50,688-image set, 96% train / 4% test.
+# It also removes an entire class of bug: with "subset" the GT generator writes only the
+# filtered TRAINING indices while the test loader reads the TAIL, so the tail GT silently goes
+# stale on every physics change. With "all", every index has GT by construction.
+nyu_train_mode:     "all"    # "all" -> whole dataset (paper protocol) | "subset" -> filtered subset
 nyu_subset_indices:            # blank -> auto ({nyu_subset_size}_filtered_nyu.npy)
 
 # How the NYU test set is chosen (data.nyu.get_test_loader):
