@@ -219,7 +219,7 @@ _DEFAULTS = {
     # and nothing is added -> a tinted-but-clear photo (a colour grade, not an underwater
     # scene). Real backscatter is BRIGHT. Changing this REQUIRES regenerating A_Mat + GT.
     "nyu_airlight_brightness_min": 0.6,
-    "make3d_airlight_brightness_min": 0.0,
+    "make3d_airlight_brightness_min": 0.5,  # MUST match config.yaml (it is in the physics hash)
     # Complex (ricardo) forward-model version:
     #   "ricardo" -> the original code that produced the paper's figures
     #   "v2"      -> corrected: untruncated Gaussian PSF (P1), energy-conserving
@@ -240,10 +240,12 @@ _DEFAULTS = {
     # may be simulated under clearer water (clarity). Calibrated so NYU reproduces its
     # previous look (sigma=25.5px at z=10m, f=259.4).
     # x nyu_water_clarity(3.0) => the SAME PSF/scattered-fraction as before; only beta rises.
-    "gamma_angular": [0.0014, 0.0015, 0.0016],            # rad/m (see config.yaml)
+    "gamma_angular": [0.0042, 0.0045, 0.0048],            # rad/m, TRUE constant (clarity=1 basis)
     # Straight-path attenuation k_c = exp(-alpha_metric_c * z_m * clarity). Calibrated
     # from the old 0-255-axis alpha: alpha_metric = alpha * 255 / nyu_max_depth_m.
-    "alpha_metric": [0.15, 0.167, 0.183],                 # 1/m (see config.yaml)
+    # 0.501/0.549 exactly reproduce the GT on disk (see config.yaml); the 0.001 is a
+    # rounding artefact of a past refactor and is physically meaningless.
+    "alpha_metric": [0.45, 0.501, 0.549],                 # 1/m, TRUE constant (clarity=1 basis)
     # Focal length in PIXELS at the GT (half) resolution of each dataset.
     "nyu_focal_px": 259.43,      # NYU-v2 official fx 518.8579 @640 wide -> /2
     "kitti_focal_px": 360.77,    # KITTI P_rect_02 fx ~721.54 @1242 wide; crop keeps f -> /2
@@ -256,9 +258,15 @@ _DEFAULTS = {
     # colour filter. 3.0 = genuinely turbid harbour/coastal water, which is what indoor
     # distances need to read as underwater. Scales beta AND alpha AND gamma, so
     # gamma_angular/alpha_metric above were divided by 3 to keep the blur unchanged.
-    "nyu_water_clarity": 3.0,
+    # clarity -> SCATTERING (alpha,gamma); beta_scale -> ATTENUATION (beta). Separate
+    # knobs because absorption and scattering are independent in water, and because one
+    # shared multiplier cannot express "more veil, same blur".
+    "nyu_water_clarity": 1.0,
+    "nyu_beta_scale": 3.0,
     "make3d_water_clarity": 0.125,
+    "make3d_beta_scale": 0.125,
     "kitti_water_clarity": 0.125,
+    "kitti_beta_scale": 0.125,
     # ---- legacy (0-255-axis) coefficients, used only when complex_depth_mode=normalized
     "gamma": [0.1, 0.1, 0.043],
     "alpha": [0.032, 0.032, 0.012],
@@ -338,13 +346,25 @@ def load_config(path=None):
     Parameters
     ----------
     path : str, optional
-        Path to a YAML config file. Defaults to ``config.yaml`` next to this
-        module. A missing file is tolerated (defaults are used).
+        Path to a YAML config file. If given, it MUST exist — an explicitly requested
+        config that is missing raises, rather than silently falling back to defaults.
+        (That silent fallback once let a run load ``_DEFAULTS`` instead of ``config.yaml``
+        because ``--config config.yaml`` was passed from the wrong directory: the physics
+        differed by one key, and only the GT provenance hash caught it.)
+        When ``path`` is None, the repo-root ``config.yaml`` is used if present, else the
+        built-in defaults.
     """
     os.environ.setdefault("PROJECT_DATA", _DEFAULT_PROJECT_DATA)
     os.environ.setdefault("PROJECT_OUT", os.environ["PROJECT_DATA"])
 
     cfg = dict(_DEFAULTS)
+    if path is not None and not os.path.exists(path):
+        raise FileNotFoundError(
+            "--config %r does not exist (resolved from cwd %r).\n"
+            "A relative path is resolved against the CURRENT DIRECTORY, not the repo — run\n"
+            "from the repo root, or pass an absolute path. The repo config is: %s\n"
+            "Refusing to silently fall back to built-in defaults, whose physics may differ."
+            % (path, os.getcwd(), DEFAULT_CONFIG_PATH))
     cfg_path = path or DEFAULT_CONFIG_PATH
     if cfg_path and os.path.exists(cfg_path):
         with open(cfg_path, "r") as handle:

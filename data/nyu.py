@@ -115,8 +115,9 @@ class depthDatasetMemory(Dataset):
         n = depth_half_0_1.shape[2]
         del depth_half_0_1
 
-        # Deliver beta * water_clarity, matching the GT generator (NYU clarity = 1.0).
-        beta_mat = np.asarray(self.beta_mat_arr[idx], dtype=np.float32) * CONFIG.nyu_water_clarity
+        # beta is scaled by *_beta_scale (attenuation), NOT clarity (scattering). The GT
+        # generator uses the same key, so t = exp(-beta*z) matches exactly.
+        beta_mat = np.asarray(self.beta_mat_arr[idx], dtype=np.float32) * CONFIG.nyu_beta_scale
         beta_mat_mod = self.create_reorganize_dimension(beta_mat, m, n)
 
         a_mat = self.a_mat_arr[idx]

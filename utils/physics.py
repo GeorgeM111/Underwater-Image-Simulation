@@ -460,7 +460,8 @@ def to_transform(pic):
 
 
 def compute_complex_noise(input_image, input_depth, beta_mat, A_light,
-                          max_depth_m=None, focal_px=None, clarity=1.0, cfg=None, seed=None):
+                          max_depth_m=None, focal_px=None, clarity=1.0, beta_scale=None,
+                          cfg=None, seed=None):
     """Full underwater degradation of an RGB image [0,1] given its depth map [0,1].
 
     ``seed`` makes the Eq.6 particle field reproducible. ``_turbid_v2`` draws from the
@@ -497,6 +498,9 @@ def compute_complex_noise(input_image, input_depth, beta_mat, A_light,
         if max_depth_m is None or focal_px is None:
             raise ValueError("complex_depth_mode='metric' requires max_depth_m and focal_px.")
         clarity = float(clarity)
+        # beta_scale defaults to clarity ONLY for backwards compatibility; every caller should
+        # pass it explicitly. See the note on the two knobs below.
+        beta_scale = float(clarity if beta_scale is None else beta_scale)
         imgD_Norm = np.asarray(input_depth, dtype=np.float64) * float(max_depth_m)
         if not np.isfinite(imgD_Norm).all():
             raise ValueError("Depth map contains NaN/Inf — refusing to generate GT from it.")
@@ -510,9 +514,17 @@ def compute_complex_noise(input_image, input_depth, beta_mat, A_light,
                             DEPTH_CLIP_FRAC * float(max_depth_m),
                             float(max_depth_m))
         # Effective coefficients on the METRIC depth axis.
+        # TWO INDEPENDENT KNOBS. In real water, absorption and scattering are separate physical
+        # processes: beta is the DIFFUSE ATTENUATION K_d, while alpha/gamma describe SCATTERING
+        # (c = a + b, and c ~ 3-10x K_d). Collapsing them into one multiplier is what silently
+        # broke Make3D: raising NYU's turbidity meant dividing the SHARED gamma_angular/
+        # alpha_metric by 3, which cut Make3D's scattering to 1/3 because ITS clarity was
+        # unchanged.
+        #   clarity    -> scattering  (alpha, gamma)
+        #   beta_scale -> attenuation (beta)
         gamma_eff = (np.asarray(_cfg.gamma_angular, np.float64) * float(focal_px) * clarity).tolist()
         alpha_eff = (np.asarray(_cfg.alpha_metric, np.float64) * clarity).tolist()
-        beta_eff = (np.asarray(beta_mat, np.float64) * clarity).tolist()
+        beta_eff = (np.asarray(beta_mat, np.float64) * beta_scale).tolist()
         A_light = (np.array(A_light) * 255).tolist()
         return processImg(imgD_Norm, input_image, beta_mat, A_light,
                           gamma_eff=gamma_eff, alpha_eff=alpha_eff, beta_eff=beta_eff, cfg=_cfg)

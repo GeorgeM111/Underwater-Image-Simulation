@@ -306,7 +306,7 @@ def get_train_loader(config):
     frames = _train_frames(config)
     dataset = _KittiDataset(frames, config.kitti_gt_train_dir, config.beta_mat_kitti_train,
                             config.a_mat_kitti_train, config.kitti_max_depth_m,
-                            config.kitti_water_clarity, augment=True)
+                            config.kitti_beta_scale, augment=True)
     split_idx = int(config.train_split_ratio * len(frames))
     mode = getattr(config, 'kitti_train_mode', 'all')
     if mode == 'subset':
@@ -330,7 +330,7 @@ def get_val_loader(config):
     frames = _train_frames(config)
     dataset = _KittiDataset(frames, config.kitti_gt_train_dir, config.beta_mat_kitti_train,
                             config.a_mat_kitti_train, config.kitti_max_depth_m,
-                            config.kitti_water_clarity, augment=False)
+                            config.kitti_beta_scale, augment=False)
     split_idx = int(config.train_split_ratio * len(frames))
     val_idx = list(range(split_idx, len(frames)))
     return DataLoader(Subset(dataset, val_idx), batch_size=config.batch_size_make3d,
@@ -347,7 +347,7 @@ def get_test_loader(config):
         frames = list_completed_frames('val')
         dataset = _KittiDataset(frames, config.kitti_gt_test_dir, config.beta_mat_kitti_test,
                                 config.a_mat_kitti_test, config.kitti_max_depth_m,
-                                config.kitti_water_clarity, augment=False)
+                                config.kitti_beta_scale, augment=False)
         print("[data.kitti] test mode=official  using %d val frames" % len(frames))
         return DataLoader(dataset, batch_size=config.batch_size_make3d, shuffle=False,
                           num_workers=config.num_workers, drop_last=False)
@@ -355,7 +355,7 @@ def get_test_loader(config):
     frames = _train_frames(config)
     dataset = _KittiDataset(frames, config.kitti_gt_train_dir, config.beta_mat_kitti_train,
                             config.a_mat_kitti_train, config.kitti_max_depth_m,
-                            config.kitti_water_clarity, augment=False)
+                            config.kitti_beta_scale, augment=False)
     split_idx = int(config.train_split_ratio * len(frames))
     test_idx = list(range(split_idx, len(frames)))
     print("[data.kitti] test mode=tail  using held-out tail (%d frames)" % len(test_idx))
