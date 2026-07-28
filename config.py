@@ -75,9 +75,12 @@ _DEFAULTS = {
     # KITTI train/test selection (mirrors nyu_train_mode / nyu_test_mode):
     #   kitti_train_mode: "all" -> full train split | "subset" -> filtered indices
     #   kitti_test_mode:  "tail" -> held-out tail of train | "official" -> val split
+    # KITTI-only val fraction (held-out tail of train), SEPARATE from the shared
+    # train_split_ratio. 0.30 is large (~14k frames); 0.05-0.10 is usual.
+    "kitti_val_ratio": 0.30,
     "kitti_train_mode": "subset",
     "kitti_subset_indices": None,
-    "kitti_test_mode": "tail",
+    "kitti_test_mode": "official",  # test = KITTI val split, DISJOINT from val (tail of train)
     # Pre-computed KITTI parameter matrices (beta / atmospheric light).
     "beta_mat_kitti_train": "${PROJECT_DATA}/parameters/Beta_Mat_KITTI_train.npy",
     "a_mat_kitti_train":    "${PROJECT_DATA}/parameters/A_Mat_KITTI_train.npy",

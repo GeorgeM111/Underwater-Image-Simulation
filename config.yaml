@@ -38,9 +38,21 @@ kitti_subset_w_entropy:  0.3333
 kitti_subset_w_gradient: 0.3333
 kitti_subset_w_depth:    0.3333
 # Train/test selection (mirrors nyu_train_mode / nyu_test_mode)
+# Fraction of the KITTI TRAIN split held out for VALIDATION (early stopping / checkpoint
+# selection). This is KITTI-ONLY and is SEPARATE from train_split_ratio, which is shared with
+# NYU/Make3D and must NOT be touched. With kitti_test_mode="official" the TEST set is the
+# separate KITTI val drives, so this tail is PURELY validation -> test and val stay disjoint.
+#   train pool = first (1 - kitti_val_ratio) of the frames ; the 10k subset is drawn from it.
+#   val        = last  kitti_val_ratio       of the frames.
+# NOTE 0.30 is large: on ~46,950 image_02 frames it holds out ~14k for validation (each epoch
+# does 14k extra forward passes) and needs ~14k val-tail GT files. 0.05-0.10 is more usual.
+kitti_val_ratio:    0.30
 kitti_train_mode:   "subset"    # "subset" -> filtered indices | "all" -> full train split
 kitti_subset_indices:           # blank -> auto ({kitti_subset_size}_filtered_kitti.npy)
-kitti_test_mode:    "tail"      # "tail" -> held-out tail of train | "official" -> val split
+# "official" -> test = KITTI's own data_depth_annotated/val split (SEPARATE drives), so test is
+# DISJOINT from the val set (which is the tail of train). "tail" makes test == val (a leak):
+# you would early-stop on the exact frames you then report metrics on. Use "official".
+kitti_test_mode:    "official"  # "official" -> KITTI val split (test != val) | "tail" -> tail of train (LEAK)
 # Pre-computed KITTI parameter matrices
 beta_mat_kitti_train: "${PROJECT_DATA}/parameters/Beta_Mat_KITTI_train.npy"
 a_mat_kitti_train:    "${PROJECT_DATA}/parameters/A_Mat_KITTI_train.npy"

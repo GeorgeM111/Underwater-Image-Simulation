@@ -125,7 +125,23 @@ def main():
     score = w_ent * ent_n + w_grad * grad_n + w_depth * depth_n
 
     order = np.argsort(score)[::-1]
-    top_n = min(subset_size, n)
+
+    # Select ONLY from the TRAIN region [0, split_idx). The last kitti_val_ratio of the frames
+    # is the held-out validation set, and get_train_loader clips the subset to [0, split_idx)
+    # anyway — so without this restriction a large kitti_val_ratio (e.g. 0.30) would let ~30%
+    # of the top-k picks land in the val tail and be silently dropped, shrinking the effective
+    # training set AND biasing it (the val tail is the last drives, so its high-information
+    # frames would simply vanish). Restricting the candidate pool keeps all `subset_size`
+    # picks usable.
+    from data.kitti import kitti_split_idx
+    split_idx = kitti_split_idx(cfg, n)
+    order = order[order < split_idx]
+    n_train = int(split_idx)
+    top_n = min(subset_size, len(order))
+    if top_n < subset_size:
+        print("[warn] only %d train-region frames available (< subset_size %d)" % (top_n, subset_size))
+    print("Selecting top %d from the %d TRAIN-region frames [0, %d) (val tail [%d, %d) excluded)"
+          % (top_n, n_train, split_idx, split_idx, n))
     top_indices = np.asarray(order[:top_n], dtype=np.int64)   # sorted by score desc
 
     os.makedirs(out_dir, exist_ok=True)

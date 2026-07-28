@@ -297,6 +297,22 @@ def _train_frames(config):
     return list_completed_frames('train')
 
 
+def kitti_split_idx(config, n):
+    """Index that splits the KITTI 'train' frames into TRAIN [0, idx) and VAL [idx, n).
+
+    SINGLE SOURCE OF TRUTH for the split — the three loaders, the subset filter and the
+    val-tail GT generator all call this, so they cannot drift.
+
+    Uses ``kitti_val_ratio`` (KITTI-only), NOT the shared ``train_split_ratio``. If someone
+    has an old config with only ``train_split_ratio``, fall back to (1 - train_split_ratio)
+    so behaviour is unchanged.
+    """
+    vr = getattr(config, 'kitti_val_ratio', None)
+    if vr is None:
+        vr = 1.0 - config.train_split_ratio
+    return int((1.0 - float(vr)) * n)
+
+
 def get_train_loader(config):
     """KITTI training loader (mirrors data.nyu.get_train_loader).
 
@@ -307,7 +323,7 @@ def get_train_loader(config):
     dataset = _KittiDataset(frames, config.kitti_gt_train_dir, config.beta_mat_kitti_train,
                             config.a_mat_kitti_train, config.kitti_max_depth_m,
                             config.kitti_beta_scale, augment=True)
-    split_idx = int(config.train_split_ratio * len(frames))
+    split_idx = kitti_split_idx(config, len(frames))
     mode = getattr(config, 'kitti_train_mode', 'all')
     if mode == 'subset':
         path = _resolve_subset_path(config)
@@ -331,7 +347,7 @@ def get_val_loader(config):
     dataset = _KittiDataset(frames, config.kitti_gt_train_dir, config.beta_mat_kitti_train,
                             config.a_mat_kitti_train, config.kitti_max_depth_m,
                             config.kitti_beta_scale, augment=False)
-    split_idx = int(config.train_split_ratio * len(frames))
+    split_idx = kitti_split_idx(config, len(frames))
     val_idx = list(range(split_idx, len(frames)))
     return DataLoader(Subset(dataset, val_idx), batch_size=config.batch_size_make3d,
                       shuffle=False, num_workers=config.num_workers, drop_last=False,
@@ -356,7 +372,7 @@ def get_test_loader(config):
     dataset = _KittiDataset(frames, config.kitti_gt_train_dir, config.beta_mat_kitti_train,
                             config.a_mat_kitti_train, config.kitti_max_depth_m,
                             config.kitti_beta_scale, augment=False)
-    split_idx = int(config.train_split_ratio * len(frames))
+    split_idx = kitti_split_idx(config, len(frames))
     test_idx = list(range(split_idx, len(frames)))
     print("[data.kitti] test mode=tail  using held-out tail (%d frames)" % len(test_idx))
     return DataLoader(Subset(dataset, test_idx), batch_size=config.batch_size_make3d,
