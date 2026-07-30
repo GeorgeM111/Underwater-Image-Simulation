@@ -36,6 +36,7 @@ PHYSICS_KEYS = (
     'nyu_max_depth_m', 'make3d_max_depth_m', 'kitti_max_depth_m',
     'u', 'turbu_c', 'turbu_pr', 'turbu_sigma', 'depth_levels',
     'airlight_bg_depth', 'nyu_airlight_brightness_min', 'make3d_airlight_brightness_min',
+    'kitti_depth_source',
     'random_seed',
 )
 

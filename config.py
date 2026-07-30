@@ -51,6 +51,14 @@ _DEFAULTS = {
     # Completed-depth (data_depth_annotated) root, holding train/ and val/ splits:
     #   <dir>/<split>/<drive>/proj_depth/groundtruth/image_02/<frame>.png
     "kitti_completed_depth_dir": "${PROJECT_DATA}/kitti/completed_depth",
+    # KITTI dense-depth GT source. "completed" -> IP-Basic densified LiDAR (original). "depth_hints"
+    # -> keep the real LiDAR measurements where valid and fill the holes/sky with the (scale-aligned)
+    # dense SGM STEREO depth from the left+right cameras (the classical "depth hints"), instead of the
+    # IP-Basic morphology that invents the sky. A geometric measurement, not a network prediction; the
+    # depth network is untouched. Stereo maps live in kitti_depth_hints_dir as <drive>/<frame>.npy
+    # (raw resolution, metres), produced by scripts/kitti_depth_hints_sgm.py. Regenerate KITTI GT after.
+    "kitti_depth_source": "completed",
+    "kitti_depth_hints_dir": "${PROJECT_DATA}/kitti/depth_hints",
     "kitti_gt_train_dir": "${PROJECT_DATA}/ground_truth/kitti/train",
     "kitti_gt_test_dir": "${PROJECT_DATA}/ground_truth/kitti/test",
     "kitti_max_depth_m": 80.0,

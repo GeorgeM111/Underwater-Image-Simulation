@@ -182,19 +182,69 @@ def kb_crop(arr, w=None, h=None):
     return arr[top:top + h, left:left + w]
 
 
+def _depth_hints_path(f):
+    """Path to the SGM stereo depth ``.npy`` for frame ``f`` (the classical "depth hints").
+
+    Raw-resolution (same HxW as the completed-depth PNG) metric depth, produced offline by
+    ``scripts/kitti_depth_hints_sgm.py`` by semi-global matching the left+right KITTI cameras.
+    A geometric measurement from the two real cameras, not a network prediction.
+    """
+    return os.path.join(CONFIG.kitti_depth_hints_dir, f['drive'], f['frame'] + '.npy')
+
+
+def _fuse_lidar_predicted(lidar, predicted, max_depth_m):
+    """Fuse the sparse LiDAR completed depth with a DENSE predicted depth.
+
+    The real LiDAR measurements are kept wherever they exist; the holes and the (LiDAR-less)
+    sky are filled with the predicted depth, after a per-frame median scale alignment on the
+    overlap. The alignment makes the fill metric-consistent with the LiDAR and removes any
+    dependence on the predictor's absolute scale. Both inputs are metres at the SAME
+    resolution. Returns a dense float32 map in metres, with the measurements untouched.
+    """
+    lidar = lidar.astype(np.float32)
+    pred = predicted.astype(np.float32)
+    valid = lidar > 0.1
+    both = valid & (pred > 0.1)
+    if int(both.sum()) >= 100:                       # align predicted -> LiDAR scale
+        scale = float(np.median(lidar[both] / pred[both]))
+        if np.isfinite(scale) and scale > 0.0:
+            pred = pred * scale
+    fused = np.where(valid, lidar, pred).astype(np.float32)
+    fused = _nearest_fill(fused)                      # backstop (predicted is dense, but be safe)
+    fused[valid] = lidar[valid]                       # restore the exact LiDAR measurements
+    return np.clip(fused, 0.0, max_depth_m)
+
+
 def load_frame_image_depth(f, max_depth_m=None):
     """Canonical (image_rgb_uint8, dense_depth_metres) for one frame.
 
-    CROP first, then densify — so the hole-filling never extrapolates from the
-    LiDAR-less sky. Used by BOTH the GT generator (data_2) and the loader, so the two
-    can never drift apart.
+    CROP first, then densify / fuse — so the hole-filling never extrapolates from the
+    LiDAR-less sky. Used by BOTH the GT generator (data_2) and the loader, so the two can
+    never drift apart.
+
+    The dense-depth source is chosen by ``CONFIG.kitti_depth_source``:
+      ``"completed"``    IP-Basic densification of the LiDAR completed depth (original).
+      ``"depth_hints"``  LiDAR kept where valid, holes / sky filled by the scale-aligned dense
+                         SGM stereo depth (the classical "depth hints"), see :func:`_depth_hints_path`.
     """
     if max_depth_m is None:
         max_depth_m = CONFIG.kitti_max_depth_m
     img = cv2.cvtColor(cv2.imread(f['image']), cv2.COLOR_BGR2RGB)
-    depth = read_completed_depth(f['depth'], max_depth_m, densify=False)
+    lidar = read_completed_depth(f['depth'], max_depth_m, densify=False)
     img = kb_crop(img)
-    depth = densify_depth(kb_crop(depth))
+    lidar = kb_crop(lidar)
+    source = str(getattr(CONFIG, 'kitti_depth_source', 'completed')).lower()
+    if source == 'depth_hints':
+        spath = _depth_hints_path(f)
+        if not os.path.exists(spath):
+            raise FileNotFoundError(
+                "kitti_depth_source='depth_hints' but the SGM stereo depth is missing:\n  %s\n"
+                "Run scripts/kitti_depth_hints_sgm.py to produce it, or set kitti_depth_source='completed'."
+                % spath)
+        stereo = kb_crop(np.load(spath).astype(np.float32))
+        depth = _fuse_lidar_predicted(lidar, stereo, max_depth_m)
+    else:
+        depth = densify_depth(lidar)
     return img, np.clip(depth, 0.0, max_depth_m)
 
 
