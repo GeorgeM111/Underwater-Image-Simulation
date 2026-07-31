@@ -183,13 +183,15 @@ def kb_crop(arr, w=None, h=None):
 
 
 def _depth_hints_path(f):
-    """Path to the SGM stereo depth ``.npy`` for frame ``f`` (the classical "depth hints").
+    """Path to the official Depth-Hints stereo depth ``.npy`` for the LEFT camera of frame ``f``.
 
-    Raw-resolution (same HxW as the completed-depth PNG) metric depth, produced offline by
-    ``scripts/kitti_depth_hints_sgm.py`` by semi-global matching the left+right KITTI cameras.
-    A geometric measurement from the two real cameras, not a network prediction.
+    Layout follows nianticlabs/depth-hints ``precompute_depth_hints.py``:
+    ``<kitti_depth_hints_dir>/<date>/<drive>/image_02/<frame:010d>.npy`` (metric depth, saved as a
+    ``[1, H, W]`` array). This is the fused multi-setting semi-global-matching depth of the
+    left+right cameras, i.e. a geometric measurement, not a network prediction.
     """
-    return os.path.join(CONFIG.kitti_depth_hints_dir, f['drive'], f['frame'] + '.npy')
+    return os.path.join(CONFIG.kitti_depth_hints_dir, f['date'], f['drive'], 'image_02',
+                        f['frame'] + '.npy')
 
 
 def _fuse_lidar_predicted(lidar, predicted, max_depth_m):
@@ -232,19 +234,22 @@ def load_frame_image_depth(f, max_depth_m=None):
     img = cv2.cvtColor(cv2.imread(f['image']), cv2.COLOR_BGR2RGB)
     lidar = read_completed_depth(f['depth'], max_depth_m, densify=False)
     img = kb_crop(img)
-    lidar = kb_crop(lidar)
     source = str(getattr(CONFIG, 'kitti_depth_source', 'completed')).lower()
     if source == 'depth_hints':
         spath = _depth_hints_path(f)
         if not os.path.exists(spath):
             raise FileNotFoundError(
-                "kitti_depth_source='depth_hints' but the SGM stereo depth is missing:\n  %s\n"
-                "Run scripts/kitti_depth_hints_sgm.py to produce it, or set kitti_depth_source='completed'."
-                % spath)
-        stereo = kb_crop(np.load(spath).astype(np.float32))
-        depth = _fuse_lidar_predicted(lidar, stereo, max_depth_m)
+                "kitti_depth_source='depth_hints' but the Depth-Hints stereo depth is missing:\n  %s\n"
+                "Generate it with the official depth-hints precompute_depth_hints.py (see "
+                "scripts/README_kitti_depth_hints.md), or set kitti_depth_source='completed'." % spath)
+        hint = np.load(spath).astype(np.float32)
+        if hint.ndim == 3:                                   # official saves a [1, H, W] array
+            hint = hint[0]
+        if hint.shape != lidar.shape:                        # align resolution before cropping
+            hint = cv2.resize(hint, (lidar.shape[1], lidar.shape[0]), interpolation=cv2.INTER_NEAREST)
+        depth = _fuse_lidar_predicted(kb_crop(lidar), kb_crop(hint), max_depth_m)
     else:
-        depth = densify_depth(lidar)
+        depth = densify_depth(kb_crop(lidar))
     return img, np.clip(depth, 0.0, max_depth_m)
 
 

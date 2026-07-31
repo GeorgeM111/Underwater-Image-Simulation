@@ -181,6 +181,58 @@ class GeneratorUNet(nn.Module):
         return self.final(u5)
 
 
+class GeneratorUNet_Dynamic(nn.Module):
+    """Resolution-agnostic U-Net (used for KITTI, 176x608).
+
+    Same 6-level U-Net as ``GeneratorUNet_Make3D``, but every decoder stage is
+    interpolated to the *actual* spatial size of its encoder skip (instead of a
+    hard-coded Make3D size), and the final output is interpolated back to the input
+    size. It therefore works for any input resolution without per-dataset constants.
+    """
+    def __init__(self, in_channels=3, out_channels=3):
+        super(GeneratorUNet_Dynamic, self).__init__()
+        self.down1 = UNetDown(in_channels, 64, normalize=False)
+        self.down2 = UNetDown(64, 128)
+        self.down3 = UNetDown(128, 256)
+        self.down4 = UNetDown(256, 512, dropout=0.5)
+        self.down5 = UNetDown(512, 512, dropout=0.5)
+        self.down6 = UNetDown(512, 512, dropout=0.5)
+
+        self.up1 = UNetUp_Make3D(512, 512, 1, dropout=0.5)
+        self.up2 = UNetUp_Make3D(1024, 512, 1, dropout=0.5)
+        self.up3 = UNetUp_Make3D(1024, 256, 0, dropout=0.5)
+        self.up4 = UNetUp_Make3D(512, 128, 0, dropout=0.5)
+        self.up5 = UNetUp_Make3D(256, 64, 0)
+
+        self.final = nn.Sequential(
+            nn.Upsample(scale_factor=2),
+            nn.ZeroPad2d((1, 0, 1, 0)),
+            nn.Conv2d(128, out_channels, 4, padding=1),
+            nn.Tanh(),
+        )
+
+    def _cat(self, up_out, skip):
+        up_out = F.interpolate(up_out, size=skip.shape[2:], mode='bicubic', align_corners=False)
+        return torch.cat((up_out, skip), 1)
+
+    def forward(self, x):
+        d1 = self.down1(x)
+        d2 = self.down2(d1)
+        d3 = self.down3(d2)
+        d4 = self.down4(d3)
+        d5 = self.down5(d4)
+        d6 = self.down6(d5)
+
+        u1 = self._cat(self.up1(d6), d5)
+        u2 = self._cat(self.up2(u1), d4)
+        u3 = self._cat(self.up3(u2), d3)
+        u4 = self._cat(self.up4(u3), d2)
+        u5 = self._cat(self.up5(u4), d1)
+        out = self.final(u5)
+        # guarantee the output matches the input resolution exactly
+        return F.interpolate(out, size=x.shape[2:], mode='bicubic', align_corners=False)
+
+
 ##############################
 #        Discriminator
 ##############################

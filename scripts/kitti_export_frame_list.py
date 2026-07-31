@@ -1,16 +1,17 @@
-"""Export the list of KITTI frames the pipeline actually uses, for depth prediction.
+"""Export the KITTI frames the pipeline uses, in the monodepth2 filename format.
 
-Runs in the PROJECT environment. Writes one line per unique frame:
+Runs in the PROJECT environment. Writes one line per frame in exactly the format the official
+nianticlabs/depth-hints ``precompute_depth_hints.py`` expects for its ``--filenames`` option:
 
-    <raw_image_path>\t<drive>\t<frame>
+    <date>/<drive>_sync <frame_index> l
 
-so that scripts/kitti_predict_depth.py (run in the monodepth2 / depth-hints legacy env)
-predicts a dense depth map ONLY for the frames that training and evaluation touch. This
-keeps the predicted-depth footprint small (subset + held-out tail, not all ~90k frames),
-which matters under a storage budget.
+(``l`` = left camera, image_02 — the side the underwater pipeline uses for its ground truth).
+Passing this file as ``--filenames`` makes the OFFICIAL depth-hints precompute produce stereo
+depth hints for our completed-depth frames instead of the default Eigen split, so the hints line
+up with the frames data.kitti actually loads.
 
 Coverage mirrors data.kitti exactly:
-  * training frames  -> subset indices (kitti_train_mode='subset') or range(0, split_idx)
+  * training frames  -> subset indices (kitti_train_mode='subset') or the full train split ('all')
   * validation / test-tail -> range(split_idx, N)          (get_val_loader / tail test)
   * official test    -> every frame of the 'val' split      (only if kitti_test_mode='official')
 
@@ -22,7 +23,6 @@ import os
 import sys
 import argparse
 
-# repo-root on sys.path (scripts/ -> repo root)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
@@ -35,6 +35,11 @@ def _subset_path(cfg):
         return cfg.kitti_subset_indices
     params_dir = os.path.dirname(cfg.beta_mat_kitti_train)
     return os.path.join(params_dir, "%d_filtered_kitti.npy" % int(cfg.kitti_subset_size))
+
+
+def _md2_line(f):
+    """A frame dict -> the monodepth2 filename line '<date>/<drive> <frame_int> l'."""
+    return "%s/%s %d l" % (f["date"], f["drive"], int(f["frame"]))
 
 
 def main():
@@ -72,22 +77,22 @@ def main():
         selected += K.list_completed_frames("val")
 
     # de-duplicate by (drive, frame), keep first occurrence
-    seen, rows = set(), []
+    seen, lines = set(), []
     for f in selected:
         key = (f["drive"], f["frame"])
         if key in seen:
             continue
         seen.add(key)
-        rows.append((f["image"], f["drive"], f["frame"]))
+        lines.append(_md2_line(f))
 
-    out = args.out or os.path.join(os.path.dirname(cfg.beta_mat_kitti_train), "kitti_frames_for_depth.txt")
+    out = args.out or os.path.join(os.path.dirname(cfg.beta_mat_kitti_train), "kitti_depth_hints_files.txt")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w") as fh:
-        for img, drive, frame in rows:
-            fh.write("%s\t%s\t%s\n" % (img, drive, frame))
-    print("[kitti] wrote %d unique frames -> %s" % (len(rows), out))
+        fh.write("\n".join(lines) + "\n")
+    print("[kitti] wrote %d unique frames (monodepth2 format) -> %s" % (len(lines), out))
     print("        train_used=%d  tail/val=%d  official=%s"
           % (len(train_used), len(tail_used), str(cfg.kitti_test_mode).lower() == "official"))
+    print("        feed this to the official precompute:  --filenames %s" % out)
 
 
 if __name__ == "__main__":
