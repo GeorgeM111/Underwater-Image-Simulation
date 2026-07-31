@@ -21,7 +21,10 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         if pretrained is None:
             pretrained = CONFIG.pretrained_encoder
-        self.original_model = models.densenet169(pretrained=pretrained)
+        try:                                             # torchvision >= 0.13 (pretrained= removed in 0.15)
+            self.original_model = models.densenet169(weights='DEFAULT' if pretrained else None)
+        except TypeError:                                # older torchvision
+            self.original_model = models.densenet169(pretrained=pretrained)
 
     def forward(self, x):
         features = [x]

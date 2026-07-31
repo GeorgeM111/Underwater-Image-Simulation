@@ -130,7 +130,10 @@ class VGGPerceptualLoss(nn.Module):
 
     def __init__(self):
         super(VGGPerceptualLoss, self).__init__()
-        vgg = vgg_models.vgg16(pretrained=True)
+        try:                                          # torchvision >= 0.13 (pretrained= removed in 0.15)
+            vgg = vgg_models.vgg16(weights='DEFAULT')
+        except TypeError:                             # older torchvision
+            vgg = vgg_models.vgg16(pretrained=True)
         # Extract features up to relu3_3 (first 16 layers, indices 0-15)
         self.feature_extractor = nn.Sequential(*list(vgg.features.children())[:16])
         for param in self.feature_extractor.parameters():
