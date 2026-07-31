@@ -67,3 +67,8 @@ checkpoints/
 
 # stray files from mistyped command redirects
 /--*
+
+# Telegram bot runtime logs / any local secrets
+bot_logs/
+scripts/bot/*.log
+scripts/bot/secrets*
