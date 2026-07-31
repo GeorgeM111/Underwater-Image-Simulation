@@ -106,7 +106,7 @@ def handle(text):
             msg.append("\n[%s]" % g)
             msg += ["  " + k for k in sorted(groups.get(g, []))]
         s = read_status()
-        msg.append("\nrunning: %s   queued: %d" % (s.get("current"), len(s.get("queued", []))))
+        msg.append("\nrunning: %d GPU(s)   queued: %d" % (len(s.get("running", {}) or {}), len(s.get("queued", []))))
         send("\n".join(msg))
     elif cmd == "/run":
         g = (args[0].lower() if args else "")
@@ -124,9 +124,17 @@ def handle(text):
         send("queued: %s" % n)
     elif cmd == "/status":
         s = read_status()
-        send("running: %s\nlatest: %s\nqueued: %d\n%s" % (
-            s.get("current"), s.get("epoch_line") or "(waiting)",
-            len(s.get("queued", [])), "\n".join(s.get("queued", [])[:20])))
+        running = s.get("running", {}) or {}
+        epoch = s.get("epoch", {}) or {}
+        if running:
+            lines = ["running (%d GPU):" % len(running)]
+            for g in sorted(running, key=lambda x: int(x)):
+                lines.append("  [gpu%s] %s | %s" % (g, running[g], epoch.get(g) or "(waiting)"))
+        else:
+            lines = ["running: none"]
+        q = s.get("queued", [])
+        lines.append("queued (%d): %s" % (len(q), ", ".join(q[:15]) + (" …" if len(q) > 15 else "")))
+        send("\n".join(lines))
     elif cmd == "/queue":
         s = read_status()
         send("queued (%d):\n%s" % (len(s.get("queued", [])), "\n".join(s.get("queued", [])) or "(empty)"))

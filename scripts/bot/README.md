@@ -71,7 +71,11 @@ epochs: 38
 Raw logs live under `$PROJECT_OUT/bot/logs/`.
 
 ## Notes
-* One experiment runs at a time (GPU). Send `/run kitti` and leave it; results arrive per experiment.
+* **Multi-GPU:** the node runner starts **one worker per GPU** (auto-detected from `nvidia-smi -L`)
+  and pins each job with `CUDA_VISIBLE_DEVICES`, so on a 4-GPU node **4 experiments run at once**.
+  Cap it with `NGPU=2 python scripts/bot/node_runner.py`. `/status` lists what each GPU is running.
+  (Heads-up: 4 concurrent NYU jobs each load the ~4 GB NYU zip into RAM — fine on a big node, but
+  watch memory; KITTI streams frames so it's lighter.)
 * Reservation lasts ~60 h; when it ends the **node runner** stops. Re-launch it (step A) on your next
   reservation — the **frontend bot** can keep running and will report as soon as the runner is back.
 * Smoke-test one GAN on KITTI first (`/train CycleGAN/KITTI`) — the GAN/KITTI code hasn't had a real GPU pass.
